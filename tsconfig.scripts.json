@@ -1,0 +1,14 @@
+// Typechecks scripts/, which runs under Node rather than in the browser.
+//
+// Separate from tsconfig.json because the two have incompatible ambient worlds: src
+// wants `vite/client` and the DOM lib, this wants @types/node. Merging them would put
+// Node's globals in scope for browser code, where several of them (`setTimeout`'s
+// return type, most visibly) are the wrong shape.
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"types": ["node"]
+	},
+	"include": ["scripts", "src/install"]
+}
