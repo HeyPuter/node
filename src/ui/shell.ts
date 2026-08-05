@@ -21,12 +21,11 @@
 //     directory means before the first one.
 
 import "./styles.css";
-// The favicon from nodejs.org, which the project only publishes as a bitmap.
-import NODE_LOGO from "./node-logo.png";
+import { appUrl } from "../base";
 
 const lockup = () => `
 	<div class="logo-lockup">
-		<span class="logo-tile"><img src="${NODE_LOGO}" alt="Node.js" /></span>
+		<span class="logo-tile"><img src="${appUrl("node-logo.png")}" alt="Node.js" /></span>
 	</div>`;
 
 const PUTER_MARK =

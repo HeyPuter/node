@@ -269,16 +269,28 @@ async function bootstrap() {
 			// workspace sees no popup. This is the only way an anonymous run gets a Drive.
 			if (!puter.auth.isSignedIn()) await puter.auth.signIn();
 
-			// `driveHome()` knows the username only when Puter launched the app. Otherwise —
-			// anonymous, or a hand-pasted token — it is whoever just signed in, and asking is
-			// the only way to find out: a Drive path is rooted at the username, so without
-			// this the destination would be a top-level directory nobody can create.
+			// Apps are sandboxed to their own AppData directory by default; Documents needs a
+			// permission grant this page has no dialog to ask for. `signIn()` above always
+			// mints a token scoped to an app tied to this page's own origin — even for a
+			// plain visit with no prior Puter session — so `puter.appDataPath`
+			// (`~/AppData/<appID>`) is normally set by now and is the destination guaranteed
+			// to be writable without a grant.
+			if (puter.appDataPath) {
+				return `${puter.appDataPath}/node-worker-project`;
+			}
+
+			// No appID means the token came from somewhere other than that flow — a
+			// hand-pasted personal token, most likely — so there is no per-app sandbox to
+			// route around, but also no appDataPath to use. `driveHome()` knows the username
+			// only when Puter launched the app; otherwise it is whoever just signed in, and
+			// asking is the only way to find out: a Drive path is rooted at the username, so
+			// without this the destination would be a top-level directory nobody can create.
 			let home = driveHome();
 			if (home === "/") {
 				let user = await puter.auth.getUser().catch(() => undefined);
 				if (user?.username) home = `/${user.username}`;
 			}
-			return `${home}/Documents/node-worker-project`.replace(/\/{2,}/g, "/");
+			return `${home}/AppData/node-worker-project`.replace(/\/{2,}/g, "/");
 		},
 		resolveAuth: async (prompt) => {
 			// A token if there is one, anonymous if there is not. `?anon=1` forces the
