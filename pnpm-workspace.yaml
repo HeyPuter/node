@@ -1,1 +1,6 @@
+# Optional native dependencies of just-bash, used only by its Node bundle for extra compression
+# formats. This app loads `just-bash/browser`, which has neither, so there is nothing to build.
+allowBuilds:
+  '@mongodb-js/zstd': false
+  node-liblzma: false
 onlyBuiltDependencies: []

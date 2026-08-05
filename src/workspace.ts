@@ -7,11 +7,14 @@ import { createMirrorTarget } from "./install/mirror-target";
 import { PROJECT_ROOT, ProjectMirror, type MountEntry } from "./project/mirror";
 import { fetchManifest, loadTemplate, type TemplateInfo } from "./project/template";
 import { openProjectStore, pruneProjectStores } from "./project/opfs-store";
-import { invalidateBins, runCommand, type CommandTarget } from "./runtime/command";
+import { type CommandTarget } from "./runtime/programs";
 import { exportToDrive } from "./runtime/export";
 import { WorkerPool, type PoolStatus } from "./runtime/pool";
 import { PortWatcher, previewUrlFor, rewriteLocalhost } from "./runtime/preview";
 import { isTextPath, mountEditor, type ProjectFile } from "./monaco";
+import { completeLine } from "./shell/complete";
+import { fromProjectRelative } from "./shell/paths";
+import { createWorkspaceShell, type WorkspaceShell } from "./shell/shell";
 import { mountTerminal } from "./terminal";
 import { mountExportDialog } from "./ui/export-dialog";
 import { buildShell, type ShellElements } from "./ui/shell";
@@ -154,10 +157,34 @@ async function boot(
 	let peerToken = auth.net?.peerToken;
 	let watcher = new PortWatcher((port) => showPreview(el, port, peerToken));
 	let pool: WorkerPool;
+	// Both are built after the terminal — the shell needs a worker pool to run programs in, and the
+	// pool needs somewhere to send their output — so the handlers reach for them lazily. During
+	// boot neither exists yet, which is why ctrl-C has something to fall back on.
+	let shell: WorkspaceShell | undefined;
+	/**
+	 * Stop whatever is running.
+	 *
+	 * The preview chip goes with it: it points at a port a program was serving, and that program is
+	 * being killed — so leaving it up would offer a link to a server that is no longer there.
+	 */
+	function interrupt() {
+		watcher.reset();
+		hidePreview(el);
+		if (shell) shell.interrupt();
+		else void pool.stop();
+	}
+
 	let terminal = mountTerminal(el.shell, {
 		onCommand: (line) => void submit(line),
-		onInterrupt: () => void pool.stop(),
+		onInterrupt: interrupt,
 		onResize: (size) => void pool.setTerminalSize(size),
+		onComplete: (line, cursor) =>
+			shell &&
+			completeLine(line, cursor, {
+				mirror,
+				cwd: () => shell!.cwd,
+				commandNames: () => shell!.commandNames(),
+			}),
 	});
 	terminal.setLinkHandler((uri) => rewriteLocalhost(uri, peerToken));
 	// Registered once, not per worker: the tap is on the terminal, which outlives every
@@ -267,24 +294,36 @@ async function boot(
 		hasFile: async (path) => mirror.has(path),
 		run: (request) => pool.run(request),
 	};
-	let ctx = {
+	shell = createWorkspaceShell({
+		mirror,
 		target: commandTarget,
 		write: (text: string) => terminal.write(text),
-		env: () => ({ ...BASE_ENV }),
+		baseEnv: BASE_ENV,
 		nodeVersion: () => nodeVersion,
-		clear: () => terminal.clear(),
-	};
+		endProgram: () => terminal.endProgram(),
+		onCwdChange: (cwd) => terminal.setPrompt(promptFor(cwd)),
+		pool,
+	});
+	// Package binaries are commands of the shell's, so it has to know their names. Refreshed from
+	// here at boot, and by the shell itself after an install adds more.
+	let shadowed = await shell.refreshBins();
 
-	let submit = async (line: string) => {
+	/**
+	 * Run a command line.
+	 *
+	 * `echo` is for lines nobody typed — the buttons'. Without it the terminal is still sitting on
+	 * a drawn prompt waiting for input, so the command's first output would appear immediately
+	 * after the `$` as though it were part of what was typed.
+	 */
+	let submit = async (line: string, echo = false) => {
 		if (busy) return;
+		if (echo) terminal.echoCommand(line);
 		busy = true;
 		setBusy(el, true, runLabel(info));
 		watcher.reset();
 		hidePreview(el);
 		try {
-			await runCommand(line, ctx);
-			// An install can add package binaries, so the cached index is stale.
-			if (/^\s*npm\s+(install|i)\b/.test(line)) invalidateBins(commandTarget);
+			await shell!.run(line);
 		} catch (err) {
 			terminal.write(`shell: ${err instanceof Error ? err.message : String(err)}\n`);
 		} finally {
@@ -295,12 +334,14 @@ async function boot(
 	};
 
 	el.runBtn.addEventListener("click", () => {
-		if (busy) void pool.stop();
-		else void submit(info.start);
+		// Through the shell, so stopping a dev server also ends the rest of the line it was part of.
+		if (busy) interrupt();
+		else void submit(info.start, true);
 	});
 	el.runFileBtn.addEventListener("click", () => {
 		let path = tabs.active;
-		if (path) void submit(`node ${path}`);
+		// Absolute, because the shell's directory is wherever the last `cd` left it.
+		if (path) void submit(`node ${quoteArg(fromProjectRelative(path))}`, true);
 	});
 	el.clearBtn.addEventListener("click", () => {
 		terminal.clear();
@@ -311,7 +352,8 @@ async function boot(
 		void (async () => {
 			busy = true;
 			setBusy(el, true, runLabel(info));
-			terminal.write("worker: restarting…\n");
+			// Leading newline for the same reason `submit` echoes: the prompt is still on screen.
+			terminal.write("\nworker: restarting…\n");
 			hidePreview(el);
 			try {
 				await pool.restart();
@@ -333,6 +375,7 @@ async function boot(
 		void (async () => {
 			busy = true;
 			setBusy(el, true, runLabel(info));
+			terminal.write("\n");
 			// Held until the shell has its prompt back, rather than shown where the export
 			// finishes: what the dialog covers should be a finished workspace and the
 			// export's own log lines, not a shell still mid-run behind it.
@@ -422,16 +465,20 @@ async function boot(
 			mirror,
 			pool,
 			terminal,
+			shell,
 			// Reachable without an export, which needs a signed-in account and a popup: the
 			// dialog's own behaviour is worth exercising on its own.
 			exportDialog,
-			submit: (line: string) => submit(line),
+			// Echoes by default, so a transcript read back from an automation harness shows which
+			// command produced which output.
+			submit: (line: string, echo = true) => submit(line, echo),
 			isBusy: () => busy,
 		};
 	}
 
 	window.addEventListener("beforeunload", () => {
 		editor.dispose();
+		shell?.dispose();
 		terminal.dispose();
 		tree.dispose();
 		tabs.dispose();
@@ -449,7 +496,15 @@ async function boot(
 				? `${info.id} template restored from this device (${info.packages} packages)`
 				: `${info.id} template unpacked (${info.packages} packages)`
 		);
-		terminal.writeLine("type help, or hit Run dev server");
+		terminal.writeLine(`bash over ${PROJECT_ROOT} — type help, or hit Run dev server`);
+		if (shadowed.length > 0) {
+			// Said once, at boot, because it is a property of what is installed rather than of any
+			// command: the shell's own `sort` is not the package's, and `npm exec` is how to say so.
+			terminal.writeLine(
+				`note: node_modules also provides ${shadowed.join(", ")} — the shell's own win; use "npm exec <name>"`
+			);
+		}
+		terminal.setPrompt(promptFor(PROJECT_ROOT));
 		terminal.prompt();
 
 		// Most specific first: a react template's entry point is `src/main.tsx`, and opening
@@ -475,6 +530,27 @@ async function boot(
 
 function phaseVerb(phase: string): string {
 	return phase === "download" ? "Downloading" : "Unpacking";
+}
+
+/**
+ * The prompt for a working directory.
+ *
+ * Truncated from the left when it gets long, because the prompt shares one row with whatever is
+ * being typed — and `redraw` rewrites exactly one row, so a prompt that pushes the line into a
+ * second one redraws imperfectly.
+ */
+function promptFor(cwd: string): string {
+	let shown = cwd;
+	if (shown.length > 28) {
+		let parts = shown.split("/").filter(Boolean);
+		if (parts.length > 2) shown = `…/${parts.slice(-2).join("/")}`;
+	}
+	return `\x1b[38;2;154;161;173m${shown} $\x1b[0m `;
+}
+
+/** Quote a path for the shell, since a file name may contain spaces. */
+function quoteArg(arg: string): string {
+	return /[^A-Za-z0-9_./@+-]/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg;
 }
 
 /** The project's own files, as the editor's program. */

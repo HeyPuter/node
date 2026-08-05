@@ -15,12 +15,30 @@ export interface RunRequest {
 	module?: "esm" | "cjs";
 	/** Registered before the run and removed after — how `--eval` is delivered. */
 	virtualModule?: { path: string; code: string };
+	/**
+	 * Absolute directory the program runs in, in the runtime's own namespace. Defaults to the
+	 * target's root.
+	 *
+	 * Only a shell that has a working directory has anything to put here — a `cd src` has to
+	 * reach `process.cwd()`, or a program run from `src` resolves its relative paths from
+	 * somewhere the user did not ask for. Ignored by the Puter-terminal runner, whose cwd is
+	 * fixed when its long-lived worker is created.
+	 */
+	cwd?: string;
 }
 
 export interface RunResult {
 	exitCode: number;
 	/** Set when the run failed for a reason other than a non-zero exit. */
 	error?: Error;
+	/**
+	 * The host stopped this run on purpose — ctrl-C, or Stop.
+	 *
+	 * Terminating a worker rejects whatever it was running, so without this the ordinary outcome of
+	 * pressing ctrl-C is indistinguishable from a crash, and gets reported as one: "Error: Worker
+	 * terminated", with a stack trace through the pool.
+	 */
+	interrupted?: boolean;
 }
 
 export interface Runner {

@@ -9,7 +9,7 @@
 
 import { type TTYState } from "node-worker";
 
-import { runArgv } from "./runtime/command";
+import { runArgv, terminalContext } from "./runtime/command";
 import { createDriveCommandTarget } from "./runtime/drive-command";
 import {
 	anonNet,
@@ -211,11 +211,10 @@ async function runInPuterTerminal(root: Element, runtime: PuterTerminalRuntime) 
 	try {
 		// No `nodeVersion` and no `clear`: the version is answered by asking the runtime,
 		// and the screen belongs to the Puter Terminal.
-		let outcome = await runArgv(terminalArgv(runtime.args), {
-			target,
-			write,
-			env: terminalEnv,
-		});
+		let outcome = await runArgv(
+			terminalArgv(runtime.args),
+			terminalContext({ target, write, env: terminalEnv })
+		);
 		exitCode = outcome.exitCode;
 		await settleTerminalOutput();
 	} catch (err) {

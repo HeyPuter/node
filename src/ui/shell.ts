@@ -29,8 +29,14 @@ const PUTER_MARK =
 
 const GITHUB_URL = "https://github.com/HeyPuter/node-worker";
 const DOCS_URL = "https://developer.puter.com/";
-/** The desktop, where the Terminal that runs an export lives. */
-const DESKTOP_URL = "https://puter.com/desktop";
+/**
+ * The desktop, asked for a Terminal window.
+ *
+ * `/desktop/app/<name>` opens the desktop with that app already launched, so this is one
+ * click rather than "open the desktop, then find the Terminal" — which is the first step
+ * of the export dialog and the one with the most room to go wrong.
+ */
+const TERMINAL_URL = "https://puter.com/desktop/app/terminal";
 
 /**
  * This app's name on Puter, and therefore the command that starts it.
@@ -202,8 +208,9 @@ const MARKUP = `
 		<ol class="dialog-steps">
 			<li>
 				<span class="step-text">
-					Open the <strong>Terminal</strong> app on your
-					<a href="${DESKTOP_URL}" target="_blank" rel="noreferrer">Puter desktop</a>.
+					<a href="${TERMINAL_URL}" target="_blank" rel="noreferrer">Open a Terminal</a> —
+					the link takes you to your Puter desktop with a <strong>Terminal</strong> window
+					already open.
 				</span>
 			</li>
 			<li>
@@ -213,6 +220,14 @@ const MARKUP = `
 			<li>
 				<span class="step-text">Start it, the same way the Run button does here.</span>
 				<code class="dialog-cmd" id="exportDialogStart"></code>
+			</li>
+			<li>
+				<span class="step-text">
+					To reach a server it starts, open the <strong>Browser</strong> app — search for
+					it in the dock, or in the app menu at the bottom of the desktop. The project's
+					<code>localhost</code> URLs are not on the public internet, and the Browser is
+					what reaches them over Puter's networking.
+				</span>
 			</li>
 		</ol>
 		<div class="dialog-actions">

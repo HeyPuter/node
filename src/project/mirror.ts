@@ -115,6 +115,16 @@ export class ProjectMirror {
 	private applying = false;
 
 	/**
+	 * Every persisted change, in the order it was made.
+	 *
+	 * Persistence is asynchronous and the read model is not, so two changes to the same path
+	 * issued in one turn used to race: `echo x > f` followed by `rm f` are two independent
+	 * promises, and nothing said the removal had to land second. A shell makes that ordinary
+	 * — it is a single line — so writes go through one chain rather than one promise each.
+	 */
+	private tail: Promise<void> = Promise.resolve();
+
+	/**
 	 * Apply changes that came from the store, without writing them back.
 	 *
 	 * Not an optimization — without it the reflector loops forever. A program writes a file, the
@@ -139,9 +149,21 @@ export class ProjectMirror {
 	 */
 	private persist(fn: () => Promise<void>): void {
 		if (!this.target || this.applying) return;
-		void fn().catch((err) => {
+		this.tail = this.tail.then(fn).catch((err) => {
 			console.error("[workspace] could not persist a change to the project store", err);
 		});
+	}
+
+	/**
+	 * Resolves once every change made so far has reached the store.
+	 *
+	 * A write reaches the read model synchronously and the store afterwards, and the runtime
+	 * reads the project *through* the store — so without this, `echo hi > f && node -e
+	 * "…readFileSync…"` is a race the shell loses about as often as it wins. Awaited before a
+	 * run rather than after a write, because that is the one moment the two views have to agree.
+	 */
+	flush(): Promise<void> {
+		return this.tail;
 	}
 
 	onChange(listener: () => void): () => void {
@@ -149,8 +171,24 @@ export class ProjectMirror {
 		return () => this.listeners.delete(listener);
 	}
 
+	private notifyPending = false;
+
+	/**
+	 * Announce a change, at most once per turn.
+	 *
+	 * Each notification rebuilds the editor's program, re-renders the tree and refreshes every
+	 * open tab, so it costs a pass over the project — fine per keystroke, ruinous per file when
+	 * a shell loop writes a hundred of them. Only the announcement is deferred: the read model
+	 * itself stays current synchronously, which is what read-after-write within one command
+	 * line depends on.
+	 */
 	private touched() {
-		for (let listener of [...this.listeners]) listener();
+		if (this.notifyPending) return;
+		this.notifyPending = true;
+		setTimeout(() => {
+			this.notifyPending = false;
+			for (let listener of [...this.listeners]) listener();
+		}, 0);
 	}
 
 	// ------------------------------------------------------------------ reads
@@ -166,6 +204,11 @@ export class ProjectMirror {
 	readText(path: string): string | undefined {
 		let data = this.read(path);
 		return data === undefined ? undefined : new TextDecoder().decode(data);
+	}
+
+	/** When a file last changed, for anything that has to `stat` it. Undefined for a directory. */
+	mtimeOf(path: string): number | undefined {
+		return this.files.get(normalizeProjectPath(path))?.mtimeMs;
 	}
 
 	/** Parsed JSON, or undefined if the file is absent or does not parse. */

@@ -97,6 +97,8 @@ export class WorkerPool implements Runner {
 	private spare: Promise<Member> | undefined;
 	private status: PoolStatus = "idle";
 	private running = false;
+	/** Whether `stop` asked for the current run to end, so its failure is expected. */
+	private interrupted = false;
 	/** Paths the runtime changed, coalesced before being read back into the mirror. */
 	private pendingReflect = new Set<string>();
 	/**
@@ -141,10 +143,14 @@ export class WorkerPool implements Runner {
 	async run(request: RunRequest): Promise<RunResult> {
 		if (this.running) throw new Error("a program is already running");
 		this.running = true;
+		this.interrupted = false;
 		this.setStatus("running");
 
 		let member: Member;
 		try {
+			// The program reads the project through the store, and an edit reaches the store
+			// asynchronously — so anything written just before this run has to have landed.
+			await this.opts.mirror.flush();
 			member = await this.acquire();
 		} catch (err) {
 			this.running = false;
@@ -160,6 +166,11 @@ export class WorkerPool implements Runner {
 		member.exclude = request.virtualModule?.path;
 		let result: RunResult;
 		try {
+			// Workers are created at the project root and retired after one run, so this is the
+			// only place a cwd can differ and nothing has to put it back.
+			if (request.cwd && request.cwd !== PROJECT_ROOT) {
+				await member.worker.setCwd(request.cwd);
+			}
 			if (request.virtualModule && virtualPath) {
 				await member.worker.registerVirtualModule(virtualPath, request.virtualModule.code);
 			}
@@ -170,9 +181,12 @@ export class WorkerPool implements Runner {
 			result = { exitCode };
 		} catch (err) {
 			// A program that called process.exit is reported by its status, not as a
-			// failure: the worker being gone is the expected consequence, not a fault.
-			result =
-				err instanceof WorkerExitError
+			// failure: the worker being gone is the expected consequence, not a fault. The same
+			// goes for one this side terminated, which is what ctrl-C does — 130 as a shell
+			// reports an interrupted program.
+			result = this.interrupted
+				? { exitCode: 130, interrupted: true }
+				: err instanceof WorkerExitError
 					? { exitCode: err.code }
 					: { exitCode: 1, error: asError(err) };
 		}
@@ -207,6 +221,8 @@ export class WorkerPool implements Runner {
 		if (!this.running) return;
 		let member = this.live;
 		if (!member) return;
+		// Read by `run`'s catch, which is about to see its program's promise reject.
+		this.interrupted = true;
 		await this.drainReflect();
 		// `run` is still awaiting its `import`, which the terminate below rejects.
 		this.retire(member);

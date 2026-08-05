@@ -5,7 +5,9 @@
 // makes the copy useful is the terminal integration in `main.ts` — the Puter Terminal
 // launches this app by name and hands it a command line, against the directory it was
 // launched from — so the dialog is the steps that join the two: open the Terminal, cd to
-// the export, and run it there.
+// the export, and run it there. Plus the one thing the desktop does not hand you: a server
+// the project starts is a peer server, not a public address, so the step for reaching it
+// is the desktop's Browser app rather than a URL to paste anywhere.
 //
 // Shown only after an export succeeds, since instructions for a project that is not there
 // would be worse than nothing.

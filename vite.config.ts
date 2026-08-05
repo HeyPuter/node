@@ -28,6 +28,11 @@ export default defineConfig({
 					if (id.includes("monaco-editor")) {
 						return "monaco";
 					}
+					// A single prebuilt bundle with every command in it — npm ships no sources, so
+					// there is nothing to tree-shake. Its own chunk, so it is cached on its own.
+					if (id.includes("just-bash")) {
+						return "just-bash";
+					}
 				},
 			},
 		},

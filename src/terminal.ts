@@ -4,6 +4,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { NodeWorker } from "node-worker";
 import "@xterm/xterm/css/xterm.css";
 
+import { commonPrefix, formatColumns } from "./shell/complete";
+
 // xterm rather than the mock's HTML transcript with an `<input>`: real programs need a
 // real TTY. vite's dev server repaints, `tsc` colours its diagnostics, readline expects
 // raw mode, and ctrl-C has to arrive as a byte. None of that survives being rendered as
@@ -39,7 +41,8 @@ const THEME = {
 	brightWhite: "#111827",
 };
 
-const PROMPT = "\x1b[38;2;154;161;173m/project $\x1b[0m ";
+/** Until the shell says where it is. Dim, so the line the user types is the bright part. */
+const DEFAULT_PROMPT = "\x1b[38;2;154;161;173m/project $\x1b[0m ";
 const MAX_HISTORY = 200;
 
 export interface TerminalController {
@@ -49,8 +52,27 @@ export interface TerminalController {
 	clear(): void;
 	/** Draw the prompt and start reading a command. */
 	prompt(): void;
+	/** What to draw as the prompt — the shell's working directory, once it has one. */
+	setPrompt(text: string): void;
+	/**
+	 * Show a command nobody typed, as though they had.
+	 *
+	 * A button's command has to go through this or its output starts halfway along the prompt
+	 * line: the prompt is drawn and waiting for input, and nothing else moves the cursor off it.
+	 */
+	echoCommand(text: string): void;
 	/** Hand the keyboard to a running program's stdin. */
 	attachConsole(workerConsole: NodeWorker["console"]): void;
+	/**
+	 * A program finished: take the keyboard back, without tearing its output down.
+	 *
+	 * Deliberately not `detachConsole`. That cancels the stream readers, and a cancelled reader
+	 * drops whatever the worker had already enqueued — so the last lines a program printed before
+	 * exiting would be lost. This only decides where the next keystroke goes, which matters because
+	 * one command line can run a program and then a builtin, and ctrl-C means different things to
+	 * the two.
+	 */
+	endProgram(): void;
 	/** The terminal's current dimensions, for `process.stdout.columns`/`rows`. */
 	readonly size: { columns: number; rows: number };
 	/** Take it back, and stop forwarding the program's output. */
@@ -83,10 +105,22 @@ export interface TerminalHandlers {
 	/** The terminal was resized, so a running program's `columns` is now stale. */
 	onResize?: (size: { columns: number; rows: number }) => void;
 	/**
-	 * ctrl-C pressed twice while a program is running: the first press is delivered
-	 * to it as a byte, and only a second one asks the host to stop it outright.
+	 * Stop what is running.
+	 *
+	 * While a program owns the keyboard this takes two ctrl-C presses: the first is delivered to it
+	 * as a byte, and only a second asks the host to stop it outright. While a *builtin* is running
+	 * — or between two programs in one line — there is nothing to deliver a byte to, so the first
+	 * press comes straight here.
 	 */
 	onInterrupt: () => void;
+	/**
+	 * What Tab should complete, if anything.
+	 *
+	 * Synchronous because the redraw is: the shell answers from the project mirror and a set of
+	 * command names, neither of which needs awaiting. `from` is where in the line the returned
+	 * texts replace.
+	 */
+	onComplete?: (line: string, cursor: number) => { from: number; items: string[] } | undefined;
 }
 
 export function mountTerminal(
@@ -143,6 +177,7 @@ export function mountTerminal(
 	// ------------------------------------------------------------- shell mode
 
 	let mode: "shell" | "program" | "idle" = "idle";
+	let promptText = DEFAULT_PROMPT;
 	let line = "";
 	let cursor = 0;
 	let history: string[] = [];
@@ -153,24 +188,32 @@ export function mountTerminal(
 	let redraw = () => {
 		// Rewrite the whole line: cheaper to reason about than tracking what changed,
 		// and imperceptible at these lengths.
-		terminal.write(`\r\x1b[K${PROMPT}${line}`);
+		terminal.write(`\r\x1b[K${promptText}${line}`);
 		let back = line.length - cursor;
 		if (back > 0) terminal.write(`\x1b[${back}D`);
 	};
 
-	let submit = () => {
-		let entered = line;
+	let remember = (entry: string) => {
+		if (!entry.trim()) return;
+		// Deduplicate only against the immediately previous entry, as shells do.
+		if (history[history.length - 1] !== entry) history.push(entry);
+		if (history.length > MAX_HISTORY) history.shift();
+		historyAt = history.length;
+	};
+
+	/** Leave the current line behind and stop reading it — what Enter does. */
+	let consumeLine = () => {
 		terminal.write("\r\n");
 		line = "";
 		cursor = 0;
 		historyAt = history.length;
 		mode = "idle";
-		if (entered.trim()) {
-			// Deduplicate only against the immediately previous entry, as shells do.
-			if (history[history.length - 1] !== entered) history.push(entered);
-			if (history.length > MAX_HISTORY) history.shift();
-			historyAt = history.length;
-		}
+	};
+
+	let submit = () => {
+		let entered = line;
+		consumeLine();
+		remember(entered);
 		handlers.onCommand(entered);
 	};
 
@@ -185,6 +228,44 @@ export function mountTerminal(
 		redraw();
 	};
 
+	/**
+	 * Complete the word under the cursor.
+	 *
+	 * One match is inserted outright, with a trailing space unless it is a directory — so
+	 * `cat src/<tab>` keeps going rather than ending the word. Several matches insert as much as
+	 * they agree on, and a second press (which adds nothing) lists them, as a shell does.
+	 */
+	let complete = () => {
+		if (!handlers.onComplete) return;
+		let suggestion = handlers.onComplete(line, cursor);
+		if (!suggestion || suggestion.items.length === 0) return;
+
+		let replace = (text: string) => {
+			line = line.slice(0, suggestion.from) + text + line.slice(cursor);
+			cursor = suggestion.from + text.length;
+		};
+
+		if (suggestion.items.length === 1) {
+			let only = suggestion.items[0];
+			replace(only.endsWith("/") ? only : `${only} `);
+			redraw();
+			return;
+		}
+
+		let shared = commonPrefix(suggestion.items);
+		let typed = line.slice(suggestion.from, cursor);
+		if (shared.length > typed.length) {
+			replace(shared);
+			redraw();
+			return;
+		}
+		terminal.write("\r\n");
+		for (let row of formatColumns(suggestion.items, terminal.cols)) {
+			terminal.write(`${row}\r\n`);
+		}
+		redraw();
+	};
+
 	let onShellKey = (data: string) => {
 		// Multi-byte pastes arrive as one chunk; handling them character-wise keeps
 		// bracketed text from being mistaken for control input.
@@ -194,6 +275,10 @@ export function mountTerminal(
 			if (ch === "\r" || ch === "\n") {
 				submit();
 				return;
+			}
+			if (ch === "\t") {
+				complete();
+				continue;
 			}
 			if (ch === "\x7f" || ch === "\b") {
 				if (cursor > 0) {
@@ -275,6 +360,16 @@ export function mountTerminal(
 	let onData = (data: string) => {
 		if (mode === "shell") {
 			onShellKey(data);
+			return;
+		}
+		if (mode === "idle") {
+			// Something is running and no program owns the keyboard — a builtin, or the gap between
+			// two programs in one line. Nothing can be handed a byte, so ctrl-C is the host's to
+			// act on immediately; without this a `find /` would be unstoppable.
+			if (data === "\x03") {
+				terminal.write("^C\r\n");
+				handlers.onInterrupt();
+			}
 			return;
 		}
 		if (mode !== "program") return;
@@ -390,11 +485,32 @@ export function mountTerminal(
 			line = "";
 			cursor = 0;
 			historyAt = history.length;
-			terminal.write(`\r\n${PROMPT}`);
+			terminal.write(`\r\n${promptText}`);
 			terminal.focus();
 		},
 
+		setPrompt(text: string) {
+			promptText = text;
+			if (mode === "shell") redraw();
+		},
+
+		echoCommand(text: string) {
+			// Drawn onto the waiting prompt, replacing anything half-typed there — the command is
+			// running either way, so showing the line it ran on is the honest version.
+			if (mode === "shell") {
+				line = text;
+				cursor = text.length;
+				redraw();
+			}
+			consumeLine();
+			remember(text);
+		},
+
 		attachConsole,
+
+		endProgram() {
+			if (mode === "program") mode = "idle";
+		},
 
 		detachConsole() {
 			detach();

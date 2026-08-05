@@ -10,7 +10,7 @@ import { NodeWorker, WorkerExitError, type Console as NodeWorkerConsole } from "
 import workerURL from "node-worker/worker?url";
 
 import { createDriveTarget } from "../install/drive-target";
-import type { CommandTarget } from "./command";
+import type { CommandTarget } from "./programs";
 import type { RunRequest, RunResult } from "./run";
 
 export interface DriveCommandOptions {
