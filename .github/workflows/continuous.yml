@@ -59,9 +59,61 @@ jobs:
         with:
           node-version: 24
 
+      # node-worker's build also compiles a Rust crate to wasm, via
+      # src/worker/node-rust/wasm/build.sh. That script wants cargo and a wasm-bindgen CLI whose
+      # version matches the crate's exactly — it checks, and refuses to run on a mismatch.
+      #
+      # Ahead of the node-worker build rather than folded into it, because build.sh runs at the
+      # *end* of prepare-node.js: a toolchain problem would otherwise surface an hour in, after the
+      # emsdk and Node work is already done and paid for.
+      - name: Set up Rust for the rewriter wasm build
+        run: |
+          # Read the version out of build.sh's own check rather than restating it here, so this
+          # cannot drift from whatever the sibling repo demands at the commit being built.
+          build_sh=node-worker/src/worker/node-rust/wasm/build.sh
+          version="$(sed -n 's/^WBG="wasm-bindgen \([0-9.]*\)"$/\1/p' "$build_sh")"
+          if [ -z "$version" ]; then
+            echo "::error::could not read the required wasm-bindgen version out of $build_sh"
+            exit 1
+          fi
+          echo "build.sh wants wasm-bindgen $version"
+
+          # nightly with rust-src, because build.sh builds std from source (`-Z build-std`) and
+          # passes unstable rustc flags. The crate's rust-toolchain.toml asks for exactly this;
+          # installing it up front beats leaving rustup to fetch it lazily mid-build.
+          rustup toolchain install nightly --profile minimal \
+            --component rust-src --target wasm32-unknown-unknown
+
+          # The prebuilt binary: `cargo install wasm-bindgen-cli` would compile it from source for
+          # several minutes to reach the same place.
+          tarball="wasm-bindgen-$version-x86_64-unknown-linux-musl"
+          base="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$version"
+          curl -sSfL -O "$base/$tarball.tar.gz" -O "$base/$tarball.tar.gz.sha256sum"
+          # Compared by hand rather than with `sha256sum -c`, whose input names a path that only
+          # ever existed on the machine that cut the release.
+          expected="$(awk '{print $1}' "$tarball.tar.gz.sha256sum")"
+          actual="$(sha256sum "$tarball.tar.gz" | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::wasm-bindgen $version checksum mismatch: expected $expected, got $actual"
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$tarball.tar.gz" --strip-components=1 \
+            -C "$HOME/.local/bin" "$tarball/wasm-bindgen"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `$GITHUB_PATH` only takes effect in later steps, so this is the first point at which the
+      # two binaries build.sh looks for can be confirmed to resolve. Cheap, and it fails here
+      # instead of at the very end of a long build.
+      - name: Check cargo and wasm-bindgen resolve
+        run: |
+          cargo --version
+          wasm-bindgen --version
+
       # The long pole by a wide margin: clones emsdk and the Node v25.9.0 source, builds OpenSSL's
-      # libcrypto with emcc, then compiles and links Node itself to wasm. Deliberately uncached —
-      # see the note at the end of this file.
+      # libcrypto with emcc, links Node itself to wasm, and finally builds the Rust rewriter above.
+      # Deliberately uncached — see the note at the end of this file.
       - name: Build node-worker
         working-directory: node-worker
         run: |
