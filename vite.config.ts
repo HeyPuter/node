@@ -16,6 +16,15 @@ const lowercaseNames = {
 } as const;
 
 export default defineConfig({
+	// Relative, so one build runs from any path: `/`, `/labs/node/`, a file:// tree. Vite emits
+	// asset URLs computed from `import.meta.url` instead of rooted at `/`, which is what lets the
+	// same dist be deployed twice at different depths. Anything the app fetches by hand has to go
+	// through `appUrl` (src/base.ts) to get the same treatment.
+	//
+	// This requires the page be served at a directory URL with a trailing slash (`/labs/node/`, not
+	// `/labs/node`) — relative URLs resolve against the *document*, so a missing slash drops a
+	// segment. Dev is unaffected: Vite forces base to `/` when serving.
+	base: "./",
 	build: {
 		chunkSizeWarningLimit: Infinity,
 		rolldownOptions: {

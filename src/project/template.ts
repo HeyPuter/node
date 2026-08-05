@@ -5,9 +5,13 @@
 
 import { createTarDecoder, createGzipDecoder } from "modern-tar";
 
+import { appUrl } from "../base";
 import type { MountEntry } from "./mirror";
 
-const MANIFEST_URL = "/templates/index.json";
+// Through `appUrl` because the templates are served from the deployment root, wherever that is —
+// see src/base.ts. The cache is keyed on the resolved URL, so two deployments on one origin keep
+// their own entries rather than one serving the other's template.
+const MANIFEST_URL = appUrl("templates/index.json");
 const CACHE_NAME = "node-worker-template";
 
 export interface TemplateInfo {
@@ -61,7 +65,7 @@ async function fetchArchive(
 	info: TemplateInfo,
 	report: ProgressReporter
 ): Promise<Uint8Array> {
-	let url = `/templates/${info.id}.tar.gz`;
+	let url = appUrl(`templates/${info.id}.tar.gz`);
 	let cache = await openCache();
 
 	let cached = await cache?.match(url);
