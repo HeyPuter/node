@@ -1222,3 +1222,164 @@ select {
 .tab.active {
   margin-bottom: -1px;
 }
+
+/* ------------------------------------------------------ export dialog */
+
+/* The `<dialog>` itself is only the centring box: it carries no surface of its own,
+   so a click that lands on it is a click outside the panel — which is what
+   export-dialog.ts reads as "dismiss". */
+.dialog-host {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  padding: 24px;
+  border: none;
+  background: transparent;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-host:not([open]) {
+  display: none;
+}
+
+.dialog-host::backdrop {
+  background: #1118273d;
+  backdrop-filter: blur(3px) saturate(140%);
+  -webkit-backdrop-filter: blur(3px) saturate(140%);
+}
+
+.dialog {
+  position: relative;
+  width: 100%;
+  max-width: 540px;
+  max-height: 100%;
+  overflow: auto;
+  padding: 22px 26px 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px #1118272e;
+  text-align: left;
+}
+
+.dialog a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.dialog a:hover {
+  text-decoration: underline;
+}
+
+.dialog-x {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dialog-x:hover {
+  background: var(--surface-1);
+  color: var(--ink-strong);
+}
+
+.dialog-title {
+  margin: 7px 0 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.dialog-copy {
+  margin: 10px 0 0;
+  color: var(--ink-mid);
+  font-size: 13.5px;
+  font-weight: 300;
+  line-height: 1.65;
+}
+
+.dialog-copy code,
+.dialog-note code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-strong);
+}
+
+/* The destination, which is the one thing in here nobody can guess. */
+.dialog-path {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font: 12px/1.5 var(--mono);
+  word-break: break-all;
+}
+
+.dialog-steps {
+  margin: 18px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  color: var(--ink-strong);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dialog-steps li::marker {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.step-text {
+  display: block;
+}
+
+/* `user-select: all` so a click takes the whole command — the fallback when the
+   copy button is denied the clipboard. */
+.dialog-cmd {
+  display: block;
+  margin-top: 7px;
+  padding: 8px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: #3b3d40;
+  font: 12px/1.5 var(--mono);
+  word-break: break-all;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.dialog-note {
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--ink-mid);
+  font-size: 12.5px;
+  font-weight: 300;
+  line-height: 1.65;
+}
+
+.dialog-actions {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

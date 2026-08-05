@@ -9,6 +9,11 @@
 //   - `#code` hosts Monaco and `#shell` hosts xterm, rather than being hand-rendered.
 //   - the splash grows a token field, since the runtime needs a Puter token for
 //     networking and there is nowhere else to ask for one.
+//   - `#exportDialog` exists at all, because the mock's Export button did nothing: a real
+//     export leaves the project on Drive, which is somewhere this page cannot run it from.
+//     A native `<dialog>`, opened with `showModal` — the workspace's own shell would
+//     otherwise keep the keyboard, and xterm swallows Escape rather than letting an
+//     overlay see it.
 
 import "./styles.css";
 // The favicon from nodejs.org, which the project only publishes as a bitmap.
@@ -24,6 +29,18 @@ const PUTER_MARK =
 
 const GITHUB_URL = "https://github.com/HeyPuter/node-worker";
 const DOCS_URL = "https://developer.puter.com/";
+/** The desktop, where the Terminal that runs an export lives. */
+const DESKTOP_URL = "https://puter.com/desktop";
+
+/**
+ * This app's name on Puter, and therefore the command that starts it.
+ *
+ * The Puter Terminal resolves a command it does not know to an app of that name and hands
+ * it the rest of the line as argv — which is the whole of the terminal integration in
+ * `main.ts`. So a run on the desktop is this name followed by the command, and the export
+ * dialog has to say so.
+ */
+export const TERMINAL_APP = "node-beta";
 
 const MARKUP = `
 <header class="top-nav">
@@ -170,6 +187,40 @@ const MARKUP = `
 		</div>
 	</div>
 </div>
+
+<dialog class="dialog-host" id="exportDialog" aria-labelledby="exportDialogTitle">
+	<div class="dialog">
+		<button class="dialog-x" id="exportDialogClose" type="button" aria-label="Close">&times;</button>
+		<p class="kicker">Export</p>
+		<h2 class="dialog-title" id="exportDialogTitle">Run it from the Puter desktop</h2>
+		<p class="dialog-copy">
+			The project, including its <code>node_modules</code>, is now on your Puter Drive at
+			<span class="dialog-path" id="exportDialogPath"></span>. The Puter Terminal can run it
+			from there: <code>${TERMINAL_APP}</code> is this app, and it runs the same in-browser
+			Node.js runtime this page does.
+		</p>
+		<ol class="dialog-steps">
+			<li>
+				<span class="step-text">
+					Open the <strong>Terminal</strong> app on your
+					<a href="${DESKTOP_URL}" target="_blank" rel="noreferrer">Puter desktop</a>.
+				</span>
+			</li>
+			<li>
+				<span class="step-text">Change into the directory the export landed in.</span>
+				<code class="dialog-cmd" id="exportDialogCd"></code>
+			</li>
+			<li>
+				<span class="step-text">Start it, the same way the Run button does here.</span>
+				<code class="dialog-cmd" id="exportDialogStart"></code>
+			</li>
+		</ol>
+		<div class="dialog-actions">
+			<button class="btn" id="exportDialogCopy" type="button">Copy commands</button>
+			<button class="btn btn-primary" id="exportDialogDone" type="button" autofocus>Done</button>
+		</div>
+	</div>
+</dialog>
 `;
 
 export interface ShellElements {
@@ -201,6 +252,14 @@ export interface ShellElements {
 	previewChipLabel: HTMLElement;
 	clearBtn: HTMLButtonElement;
 	shell: HTMLElement;
+
+	exportDialog: HTMLDialogElement;
+	exportDialogPath: HTMLElement;
+	exportDialogCd: HTMLElement;
+	exportDialogStart: HTMLElement;
+	exportDialogCopy: HTMLButtonElement;
+	exportDialogClose: HTMLButtonElement;
+	exportDialogDone: HTMLButtonElement;
 }
 
 /** Replace `root`'s contents with the workspace and return its elements. */
@@ -242,5 +301,13 @@ export function buildShell(root: Element): ShellElements {
 		previewChipLabel: pick("previewChipLabel"),
 		clearBtn: pick("clearBtn"),
 		shell: pick("shell"),
+
+		exportDialog: pick("exportDialog"),
+		exportDialogPath: pick("exportDialogPath"),
+		exportDialogCd: pick("exportDialogCd"),
+		exportDialogStart: pick("exportDialogStart"),
+		exportDialogCopy: pick("exportDialogCopy"),
+		exportDialogClose: pick("exportDialogClose"),
+		exportDialogDone: pick("exportDialogDone"),
 	};
 }

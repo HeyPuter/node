@@ -32,7 +32,14 @@ export const devDefaults: { token: string; cwd: string } = import.meta.env.DEV
 // authenticated and anonymous ICE is STUN-only. Export still works — it asks puter.js for
 // an account at the moment it needs one, rather than the page needing one up front.
 
-/** `?anon=1`, or `VITE_DEV_ANON=1` in dev. Never prompts for a token. */
+/**
+ * Force the anonymous path even when a token is available.
+ *
+ * Not the only way in: with no token from anywhere the workspace goes anonymous by
+ * itself. This is for testing that path while a token is sitting in the store, and it is
+ * strict — if the relay endpoint refuses this origin, it fails rather than falling back
+ * to the token it was told to ignore.
+ */
 export const isAnonMode =
 	params.get("anon") === "1" ||
 	(import.meta.env.DEV && (import.meta.env.VITE_DEV_ANON ?? "").trim() === "1");

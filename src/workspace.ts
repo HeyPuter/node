@@ -13,6 +13,7 @@ import { WorkerPool, type PoolStatus } from "./runtime/pool";
 import { PortWatcher, previewUrlFor, rewriteLocalhost } from "./runtime/preview";
 import { isTextPath, mountEditor, type ProjectFile } from "./monaco";
 import { mountTerminal } from "./terminal";
+import { mountExportDialog } from "./ui/export-dialog";
 import { buildShell, type ShellElements } from "./ui/shell";
 import { mountSplash } from "./ui/splash";
 import { mountTabs } from "./ui/tabs";
@@ -142,7 +143,7 @@ async function boot(
 	let auth = await opts.resolveAuth(() => splash.requestToken());
 	let anonymous = !auth.token;
 	if (anonymous) {
-		splash.log("auth: anonymous — wisp relay + peer token, no Drive");
+		splash.log("auth: anonymous — wisp relay + peer token; Export signs in when asked");
 	}
 
 	// --- terminal, so worker output has somewhere to go from the start ----
@@ -199,6 +200,7 @@ async function boot(
 		},
 	});
 	let tree = mountTree(el.tree, mirror, (path) => openFile(path));
+	let exportDialog = mountExportDialog(el);
 
 	let openFile = (path: string) => {
 		if (!mirror.has(path)) return;
@@ -331,17 +333,22 @@ async function boot(
 		void (async () => {
 			busy = true;
 			setBusy(el, true, runLabel(info));
+			// Held until the shell has its prompt back, rather than shown where the export
+			// finishes: what the dialog covers should be a finished workspace and the
+			// export's own log lines, not a shell still mid-run behind it.
+			let exported: string | undefined;
 			try {
 				// Where to write is resolved per click, not at boot: an anonymous workspace has
 				// no account yet, and this is where it gets one — `prepareExport` runs the
 				// puter.js sign-in flow and then answers with that account's directory.
 				let destination = await opts.prepareExport();
-				await exportToDrive({
+				let exitCode = await exportToDrive({
 					puter: (globalThis as any).puter,
 					mirror,
 					destination,
 					write: (text) => terminal.write(text),
 				});
+				if (exitCode === 0) exported = destination;
 			} catch (err) {
 				// Cancelling the sign-in popup lands here, and it is an ordinary outcome
 				// rather than a failure worth breaking the workspace over.
@@ -351,6 +358,10 @@ async function boot(
 				setBusy(el, false, runLabel(info));
 				terminal.prompt();
 			}
+			// A copy on Drive is not visible from this page at all, so this is where an
+			// export becomes usable: the steps that run it from the Puter desktop. Only on
+			// success, since otherwise they would be steps for files that are not there.
+			if (exported !== undefined) exportDialog.show(exported, info.start);
 		})();
 	});
 	/**
@@ -411,6 +422,9 @@ async function boot(
 			mirror,
 			pool,
 			terminal,
+			// Reachable without an export, which needs a signed-in account and a popup: the
+			// dialog's own behaviour is worth exercising on its own.
+			exportDialog,
 			submit: (line: string) => submit(line),
 			isBusy: () => busy,
 		};

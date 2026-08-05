@@ -282,15 +282,26 @@ async function bootstrap() {
 			return `${home}/Documents/node-worker-project`.replace(/\/{2,}/g, "/");
 		},
 		resolveAuth: async (prompt) => {
-			// Anonymous is a deliberate mode, not a fallback: a page that *has* a token
-			// still uses it, so `?anon=1` is the only thing that turns Drive off.
-			if (isAnonMode) return { token: "", net: await anonNet(runtimeStore) };
+			// A token if there is one, anonymous if there is not. `?anon=1` forces the
+			// anonymous path even when a token is available; otherwise a token — from the
+			// launch URL, from `VITE_DEV_TOKEN`, or pasted on an earlier visit — still wins.
+			let token = isAnonMode ? "" : runtimeStore.token.trim();
+			if (token) return { token };
 
-			let existing = runtimeStore.token.trim();
-			if (existing) return { token: existing };
-			let entered = await prompt();
-			runtimeStore.token = entered;
-			return { token: entered };
+			try {
+				return { token: "", net: await anonNet(runtimeStore) };
+			} catch (err) {
+				// The relay endpoint is origin-gated, so a page it does not recognize cannot
+				// go anonymous at all — and that is the one remaining case where a token is
+				// the only way in, so it is the only case that still asks for one. Someone
+				// who asked for anonymous explicitly gets the error instead: quietly wanting
+				// their token would be the opposite of what they asked for.
+				if (isAnonMode) throw err;
+				console.warn("[node-worker-test] anonymous mode unavailable", err);
+				let entered = await prompt();
+				runtimeStore.token = entered;
+				return { token: entered };
+			}
 		},
 	});
 }
