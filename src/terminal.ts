@@ -148,7 +148,7 @@ export function mountTerminal(
 	terminal.loadAddon(
 		new WebLinksAddon((event, uri) => {
 			event.preventDefault();
-			window.open(linkHandler?.(uri) ?? uri, "_blank", "noreferrer");
+			window.open(linkHandler?.(uri) ?? uri, "_blank");
 		})
 	);
 	terminal.open(container);

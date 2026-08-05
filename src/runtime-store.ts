@@ -209,15 +209,42 @@ export async function createRuntimeStore(): Promise<RuntimeStore> {
 }
 
 /**
- * The network for an anonymous run: a relay URL, and a peer token that outlives the tab.
+ * Split a wisp v1 URL into the relay address and the relay token it carries.
+ *
+ * `generateWispV1URL()` builds that URL as `${server}/${token}/` from a
+ * `wisp/relay-token/create` response, so the last path segment is the token and
+ * everything before it is the server — and a relay whose address has a path prefix of
+ * its own (`wss://host/wisp/<token>/`) survives the round trip.
+ *
+ * This lives here rather than in node-worker because it is a fact about what
+ * `WISP_ENDPOINT` returns, not about wisp: node-worker dials `wispUrl` as given, and
+ * splitting it there meant guessing that every URL had a token in its last segment.
+ * The puter relays authenticate over the password extension, so undoing the
+ * concatenation is what lets `relayToken` carry it.
+ */
+function splitWispV1Url(url: string): [server: string, token: string] {
+	let parsed = new URL(url);
+	let segments = parsed.pathname.split("/").filter((s) => s.length > 0);
+	let token = segments.pop();
+	if (!token) throw new Error(`wisp url carries no relay token: ${url}`);
+	parsed.pathname = segments.length ? `/${segments.join("/")}` : "";
+	// `origin` would drop a `wss:` scheme's port on some engines, and `href` would
+	// re-add the trailing slash the pathname assignment just cleared.
+	return [parsed.toString().replace(/\/$/, ""), token];
+}
+
+/**
+ * The network for an anonymous run: a relay, and a peer token that outlives the tab.
  *
  * Awaits `flush` because the peer token is only useful if it survives the reload —
  * assignment is fire-and-forget, and the worker starting is not a reason for the write
  * to have landed.
  */
-export async function anonNet(
-	store: RuntimeStore
-): Promise<{ wispUrl: string; peerToken: string }> {
+export async function anonNet(store: RuntimeStore): Promise<{
+	wispUrl: string;
+	relayToken: string;
+	peerToken: string;
+}> {
 	let peerToken = store.peerToken.trim();
 	if (!peerToken) {
 		peerToken = crypto.randomUUID();
@@ -225,7 +252,8 @@ export async function anonNet(
 		await store.flush();
 	}
 
-	return { wispUrl: await resolveWispUrl(), peerToken };
+	let [wispUrl, relayToken] = splitWispV1Url(await resolveWispUrl());
+	return { wispUrl, relayToken, peerToken };
 }
 
 /** Where Export writes, and the default cwd for Drive mode. */
