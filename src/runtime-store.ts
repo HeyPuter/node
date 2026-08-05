@@ -102,6 +102,13 @@ export type RuntimeStore = {
 	 */
 	peerToken: string;
 	code: string;
+	/**
+	 * Where the project comes from: "local" for a picked folder, anything else for a template.
+	 *
+	 * Separate from `template` rather than folded into it, so switching to a folder and back
+	 * lands on the template that was left rather than on the default.
+	 */
+	source: string;
 	/** Which baked template the workspace last used. */
 	template: string;
 	/**
@@ -118,8 +125,8 @@ export type RuntimeStore = {
 const PREFIX = "node-worker.";
 
 /** The properties that persist; `flush` is behaviour, not state. */
-type StoredKey = "cwd" | "token" | "peerToken" | "code" | "template";
-const KEYS: StoredKey[] = ["cwd", "token", "peerToken", "code", "template"];
+type StoredKey = "cwd" | "token" | "peerToken" | "code" | "source" | "template";
+const KEYS: StoredKey[] = ["cwd", "token", "peerToken", "code", "source", "template"];
 
 function storageRead(key: string) {
 	return globalThis.localStorage?.getItem?.(key) ?? undefined;
@@ -155,6 +162,7 @@ export async function createRuntimeStore(): Promise<RuntimeStore> {
 		token: urlToken || devDefaults.token,
 		peerToken: "",
 		code: STARTER_CODE,
+		source: "",
 		template: "",
 		async flush() {
 			// A loop rather than one `all`: a write queued while we were waiting still counts.

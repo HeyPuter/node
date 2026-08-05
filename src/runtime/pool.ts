@@ -8,8 +8,10 @@
 // registries (SystemJS for ESM, the require cache for CJS) would still hold the last
 // run's instances, so re-running the same path would not even re-execute it.
 //
-// So the worker is disposable and the project lives outside it — in the origin private
-// filesystem, which the runtime now mounts directly rather than copying into each worker.
+// So the worker is disposable and the project lives outside it — in a directory the runtime now
+// mounts directly rather than copying into each worker. Which directory is a question this file
+// never asks: the origin private filesystem for a template, a folder the user picked otherwise,
+// and a `FileSystemDirectoryHandle` either way.
 //
 // That removed most of this file. There is no populate (nothing to copy), no `deltaSince`
 // (nothing to bring up to date), and no post-run `harvest` (a program's writes are already in
@@ -105,7 +107,7 @@ export class WorkerPool implements Runner {
 	 * Paths written from this side, whose event needs no read-back.
 	 *
 	 * The mirror is already current for these — it is where the write came from — so reading each
-	 * one back out of the store would mean an OPFS read per saved file, and a few hundred of them
+	 * one back out of the store would mean a file read per saved file, and a few hundred of them
 	 * during an install. Entries are added only after a write lands (a failed one produces no
 	 * event to match) and dropped on the first event that matches, so a later genuine change to
 	 * the same path still reflects.

@@ -37,6 +37,17 @@ export interface SplashController {
 	fail(message: string): void;
 	/** Ask for a token; resolves with what was entered. */
 	requestToken(): Promise<string>;
+	/**
+	 * Ask for the click that re-grants a remembered folder.
+	 *
+	 * `grant` is called from inside the button's own handler, because that is the only place
+	 * `requestPermission` can be called from — and it is why this is a splash concern at all
+	 * rather than something the boot sequence could do by itself.
+	 */
+	requestFolder(req: {
+		name: string;
+		grant: () => Promise<boolean>;
+	}): Promise<"opened" | "template">;
 	hide(): void;
 }
 
@@ -104,6 +115,53 @@ export function mountSplash(el: ShellElements): SplashController {
 					el.launchProgress.hidden = false;
 					resolve(token);
 				});
+			});
+		},
+
+		requestFolder({ name, grant }) {
+			// Same as the token form: the progress bar means nothing while we are blocked on
+			// the user, so it steps aside rather than sitting at 0%.
+			el.launchProgress.hidden = true;
+			el.folderPanel.hidden = false;
+			el.folderPanelName.textContent = name;
+			el.folderOpenBtn.textContent = `Reopen “${name}”`;
+			el.folderOpenBtn.focus();
+
+			return new Promise<"opened" | "template">((resolve) => {
+				let done = (outcome: "opened" | "template") => {
+					el.folderPanel.hidden = true;
+					el.launchProgress.hidden = false;
+					resolve(outcome);
+				};
+
+				el.folderOpenBtn.addEventListener("click", () => {
+					el.folderPanelError.hidden = true;
+					el.folderOpenBtn.disabled = true;
+					// Inside the handler, not after an await: the gesture is what buys the
+					// prompt, and anything awaited first spends it.
+					void grant()
+						.then((granted) => {
+							if (granted) {
+								done("opened");
+								return;
+							}
+							// Declining is not an error and not a dead end — the panel stays up
+							// with both ways out still on it.
+							el.folderPanelError.textContent =
+								"Permission was not granted, so the folder cannot be read. Try again, or load a template instead.";
+							el.folderPanelError.hidden = false;
+						})
+						.catch((err: unknown) => {
+							el.folderPanelError.textContent =
+								err instanceof Error ? err.message : String(err);
+							el.folderPanelError.hidden = false;
+						})
+						.finally(() => {
+							el.folderOpenBtn.disabled = false;
+						});
+				});
+
+				el.folderTemplateBtn.addEventListener("click", () => done("template"));
 			});
 		},
 

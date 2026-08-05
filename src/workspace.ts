@@ -4,9 +4,19 @@
 import type { NodeNetInit, NodeWorker } from "node-worker";
 
 import { createMirrorTarget } from "./install/mirror-target";
-import { PROJECT_ROOT, ProjectMirror, type MountEntry } from "./project/mirror";
-import { fetchManifest, loadTemplate, type TemplateInfo } from "./project/template";
-import { openProjectStore, pruneProjectStores } from "./project/opfs-store";
+import { PROJECT_ROOT, ProjectMirror } from "./project/mirror";
+import { fetchManifest, type TemplateInfo } from "./project/template";
+import {
+	pickLocalDir,
+	localDirSupported,
+	loadLocalDir,
+	saveLocalDir,
+} from "./project/local-dir";
+import {
+	resolveProject,
+	type ResolvedProject,
+	type SourceKind,
+} from "./project/source";
 import { type CommandTarget } from "./runtime/programs";
 import { exportToDrive } from "./runtime/export";
 import { WorkerPool, type PoolStatus } from "./runtime/pool";
@@ -17,6 +27,7 @@ import { fromProjectRelative } from "./shell/paths";
 import { createWorkspaceShell, type WorkspaceShell } from "./shell/shell";
 import { mountTerminal } from "./terminal";
 import { mountExportDialog } from "./ui/export-dialog";
+import { mountFolderDialog } from "./ui/folder-dialog";
 import { buildShell, type ShellElements } from "./ui/shell";
 import { mountSplash } from "./ui/splash";
 import { mountTabs } from "./ui/tabs";
@@ -67,8 +78,8 @@ export interface WorkspaceOptions {
 	resolveAuth: (
 		prompt: () => Promise<string>
 	) => Promise<{ token: string; net?: NodeNetInit }>;
-	/** Persisted UI state — which template was last used. */
-	store: { template: string; flush(): Promise<void> };
+	/** Persisted UI state — which source the project came from, and which template. */
+	store: { source: string; template: string; flush(): Promise<void> };
 	/**
 	 * Make Export possible, and answer the Drive directory it should write into.
 	 *
@@ -99,48 +110,43 @@ async function boot(
 	mirror: ProjectMirror,
 	opts: WorkspaceOptions
 ): Promise<void> {
-	// --- template ---------------------------------------------------------
+	// --- project ----------------------------------------------------------
 	splash.phase("download", 0, "Looking up the project template…");
 	let manifest = await fetchManifest();
-	let info =
-		manifest.templates.find((t) => t.id === opts.store.template) ??
-		manifest.templates.find((t) => t.id === manifest.default) ??
-		manifest.templates[0];
-	splash.log(`template: ${info.id} (create-vite ${info.createVite})`);
+	// The manifest is fetched even with a folder open, because the source select still lists the
+	// templates and an empty folder is offered one to unpack.
+	let folderDialog = mountFolderDialog(el);
+	let project = await resolveProject({
+		manifest,
+		source: opts.store.source,
+		template: opts.store.template,
+		report: splash,
+		requestFolder: (req) => splash.requestFolder(req),
+		confirmScaffold: (name, info) => folderDialog.confirmScaffold(name, info),
+		// Fire-and-forget, as every other write to the store is: nothing reloads here, so
+		// there is no navigation for it to lose a race with.
+		onSourceChanged: (kind) => {
+			opts.store.source = kind;
+		},
+	});
+	let store = project.store;
+	let info = project.template;
+	// Constant for the life of the page: a source swap reloads rather than reconciling, so the
+	// button's idle label is decided here and never recomputed.
+	let idleLabel = runLabel(project.start);
+	// Read even when a template is loaded, so the select can still offer a folder from a
+	// previous visit. `name` is a plain property — reading it needs no permission.
+	let rememberedFolder = localDirSupported() ? (await loadLocalDir())?.name : undefined;
 
-	// The other half of a template swap, done here because here is where nothing holds the
-	// outgoing files open — see `pruneProjectStores`. Normally a no-op: there is one project
-	// directory and it is the one being opened.
-	let pruned = await pruneProjectStores(info.id);
-	if (pruned.length > 0) splash.log(`cleaned up: ${pruned.join(", ")}`);
-
-	// The project lives in the origin private filesystem, and the runtime mounts it from there —
-	// so the template is unpacked once, on the first visit, and a reload finds it already present.
-	// What used to be a 10 MB download and 391 writes on every load is now a directory walk.
-	let store = await openProjectStore(info.id);
-	let restored = store.existing;
-	let entries: MountEntry[];
-	if (store.existing) {
-		splash.phase("extract", 0, "Opening your project…");
-		entries = await store.hydrate((count) => {
-			splash.phase("extract", 0, `Reading ${count} files…`);
-		});
-		splash.log(`project: ${entries.length} entries already on disk`);
-	} else {
-		entries = await loadTemplate(info, (p) => {
-			splash.phase(p.phase, p.fraction ?? 0, `${phaseVerb(p.phase)} ${p.detail}`);
-		});
-		splash.log(`template: ${entries.length} entries, ${info.packages} packages`);
-		splash.phase("extract", 0.9, "Saving the project…");
-		await store.writeMany(entries);
-	}
-	// The mirror is the UI's read model: the tree and the editor want synchronous reads, and OPFS
-	// has none. It is no longer a copy the worker needs — writes go through it to the store.
+	// The mirror is the UI's read model: the tree and the editor want synchronous reads, and a
+	// directory handle has none. It is no longer a copy the worker needs — writes go through it
+	// to the store.
 	//
 	// Seeded before it has a target, deliberately: seeding *came from* the store, and writing all
-	// of it back would double the boot cost for no effect. The target is set once the pool exists,
-	// because that is what an edit has to travel through — see `pool.projectTarget`.
-	mirror.seed(entries);
+	// of it back would double the boot cost for no effect — and against a folder somebody picked,
+	// it would rewrite every file in their project on open. The target is set once the pool
+	// exists, because that is what an edit has to travel through — see `pool.projectTarget`.
+	mirror.seed(project.entries);
 
 	// --- token ------------------------------------------------------------
 	let auth = await opts.resolveAuth(() => splash.requestToken());
@@ -152,7 +158,7 @@ async function boot(
 	// --- terminal, so worker output has somewhere to go from the start ----
 	//
 	// Preview works either way, but an anonymous peer server is not listed under any user,
-	// so the link has to carry the peer token for puter.surf to find it — see
+	// so the link has to carry the peer token for browser.puter.com to find it — see
 	// `previewUrlFor`. Undefined when signed in, which is the signed-in link unchanged.
 	let peerToken = auth.net?.peerToken;
 	let watcher = new PortWatcher((port) => showPreview(el, port, peerToken));
@@ -256,7 +262,19 @@ async function boot(
 		tabs.setDirty(path, false);
 	});
 
-	renderTemplates(el, manifest.templates, info);
+	renderSources(el, manifest.templates, project, rememberedFolder, idleLabel);
+	if (!localDirSupported()) {
+		el.openFolderBtn.disabled = true;
+		el.openFolderBtn.title =
+			"this browser cannot open a folder from your device — Chrome, Edge and other Chromium browsers can";
+	}
+	// Set once, not in `setBusy`: this is a property of the project rather than of what is
+	// running, so nothing that finishes should hand back a button with nothing behind it.
+	if (!project.start) {
+		el.runBtn.disabled = true;
+		el.runBtn.title =
+			"this project has no dev or start script in its package.json — run something from the shell instead";
+	}
 
 	// The editor's view of the project: its sources as one program, and its
 	// node_modules declarations as ambient types. Sources sync immediately (they are
@@ -319,7 +337,7 @@ async function boot(
 		if (busy) return;
 		if (echo) terminal.echoCommand(line);
 		busy = true;
-		setBusy(el, true, runLabel(info));
+		setBusy(el, true, idleLabel);
 		watcher.reset();
 		hidePreview(el);
 		try {
@@ -328,7 +346,7 @@ async function boot(
 			terminal.write(`shell: ${err instanceof Error ? err.message : String(err)}\n`);
 		} finally {
 			busy = false;
-			setBusy(el, false, runLabel(info));
+			setBusy(el, false, idleLabel);
 			terminal.prompt();
 		}
 	};
@@ -336,7 +354,8 @@ async function boot(
 	el.runBtn.addEventListener("click", () => {
 		// Through the shell, so stopping a dev server also ends the rest of the line it was part of.
 		if (busy) interrupt();
-		else void submit(info.start, true);
+		// Disabled without a start command, so this is belt and braces rather than a live path.
+		else if (project.start) void submit(project.start, true);
 	});
 	el.runFileBtn.addEventListener("click", () => {
 		let path = tabs.active;
@@ -351,7 +370,7 @@ async function boot(
 		if (busy) return;
 		void (async () => {
 			busy = true;
-			setBusy(el, true, runLabel(info));
+			setBusy(el, true, idleLabel);
 			// Leading newline for the same reason `submit` echoes: the prompt is still on screen.
 			terminal.write("\nworker: restarting…\n");
 			hidePreview(el);
@@ -362,7 +381,7 @@ async function boot(
 				terminal.write(`worker: restart failed — ${message(err)}\n`);
 			} finally {
 				busy = false;
-				setBusy(el, false, runLabel(info));
+				setBusy(el, false, idleLabel);
 				terminal.prompt();
 			}
 		})();
@@ -374,7 +393,7 @@ async function boot(
 		if (busy) return;
 		void (async () => {
 			busy = true;
-			setBusy(el, true, runLabel(info));
+			setBusy(el, true, idleLabel);
 			terminal.write("\n");
 			// Held until the shell has its prompt back, rather than shown where the export
 			// finishes: what the dialog covers should be a finished workspace and the
@@ -398,62 +417,129 @@ async function boot(
 				terminal.write(`export: ${message(err)}\n`);
 			} finally {
 				busy = false;
-				setBusy(el, false, runLabel(info));
+				setBusy(el, false, idleLabel);
 				terminal.prompt();
 			}
 			// A copy on Drive is not visible from this page at all, so this is where an
 			// export becomes usable: the steps that run it from the Puter desktop. Only on
 			// success, since otherwise they would be steps for files that are not there.
-			if (exported !== undefined) exportDialog.show(exported, info.start);
+			if (exported !== undefined) {
+				exportDialog.show(exported, project.start ?? "npm run dev");
+			}
 		})();
 	});
+
+	/** The option value the source select is showing right now, so a cancel can put it back. */
+	let activeValue = () =>
+		project.kind === "local" ? "local" : `template:${info.id}`;
+
 	/**
-	 * A template swap replaces the project wholesale, so the simplest correct thing is to
+	 * Switching source replaces the project wholesale, so the simplest correct thing is to
 	 * start over — the alternative is reconciling two unrelated trees.
 	 *
-	 * What the reload does not do by itself is release the outgoing project. It is a
-	 * directory in OPFS that this page has *mounted* into every worker it built, and the
-	 * next load deletes it (see `pruneProjectStores`) — so the workers have to be gone
-	 * first, and the choice of template has to be durably written before navigating, or the
-	 * new page prunes on behalf of the template we are leaving.
+	 * What the reload does not do by itself is release the outgoing project. A template is a
+	 * directory in OPFS that this page has *mounted* into every worker it built, and the next
+	 * load deletes it (see `pruneProjectStores`) — so the workers have to be gone first, and the
+	 * choice has to be durably written before navigating, or the new page prunes on behalf of the
+	 * template we are leaving. A picked folder is never deleted, but it is still held open by a
+	 * worker, and a lock that outlives the page is somebody's file they cannot write.
+	 *
+	 * `prepare` runs before anything is torn down and may decline, which is how the folder
+	 * picker fits: it needs the click, and cancelling it has to leave the workspace exactly
+	 * where it was.
 	 */
-	let swapTemplate = async (next: TemplateInfo) => {
+	let swapSource = async (
+		next: { kind: SourceKind; template?: string; describe: string },
+		prepare?: () => Promise<boolean>
+	) => {
+		if (busy) return;
 		busy = true;
-		setBusy(el, true, runLabel(info));
-		hidePreview(el);
-		terminal.write(`\nswitching to the ${next.id} template…\n`);
+		setBusy(el, true, idleLabel);
 
 		try {
-			opts.store.template = next.id;
+			if (prepare && !(await prepare())) {
+				el.presetSelect.value = activeValue();
+				busy = false;
+				setBusy(el, false, idleLabel);
+				return;
+			}
+		} catch (err) {
+			terminal.write(`\nswitch failed — ${message(err)}\n`);
+			el.presetSelect.value = activeValue();
+			busy = false;
+			setBusy(el, false, idleLabel);
+			terminal.prompt();
+			return;
+		}
+
+		hidePreview(el);
+		terminal.write(`\nswitching to ${next.describe}…\n`);
+
+		try {
+			opts.store.source = next.kind;
+			if (next.template) opts.store.template = next.template;
 			await opts.store.flush();
 		} catch (err) {
 			// Nothing has been torn down yet, so put the workspace back rather than
-			// stranding it on a template it did not switch to.
+			// stranding it on a source it did not switch to.
 			terminal.write(`switch failed — ${message(err)}\n`);
-			el.presetSelect.value = info.id;
+			el.presetSelect.value = activeValue();
 			busy = false;
-			setBusy(el, false, runLabel(info));
+			setBusy(el, false, idleLabel);
 			terminal.prompt();
 			return;
 		}
 
 		// `beforeunload` would do this too, but a swap is exactly the case where it must
 		// not be left to chance: an access handle that outlives the page is a file the
-		// next load cannot delete.
+		// next load cannot delete — or, for a folder, cannot write.
 		await pool.stop();
 		pool.dispose();
 		window.location.reload();
 	};
 
+	el.openFolderBtn.addEventListener("click", () => {
+		// Everything that needs the gesture happens in `prepare`, which `swapSource` calls
+		// before it tears anything down — so a dismissed picker costs nothing.
+		void swapSource({ kind: "local", describe: "a folder on this device" }, async () => {
+			let handle = await pickLocalDir();
+			// Dismissed the picker: an ordinary change of mind, not a failure.
+			if (!handle) return false;
+			if (!(await folderDialog.confirmOpen(handle.name))) return false;
+			// Saved before the reload, because the next load has no other way to find it.
+			await saveLocalDir(handle);
+			return true;
+		});
+	});
+
 	el.presetSelect.addEventListener("change", () => {
-		let next = manifest.templates.find((t) => t.id === el.presetSelect.value);
-		// Nothing to do for the template already loaded, and a run holds the worker whose
-		// files are about to be deleted.
-		if (!next || next.id === info.id || busy) {
-			el.presetSelect.value = info.id;
+		let value = el.presetSelect.value;
+		// A run holds the worker whose files are about to go away.
+		if (value === activeValue() || busy) {
+			el.presetSelect.value = activeValue();
 			return;
 		}
-		void swapTemplate(next);
+
+		if (value === "local") {
+			// The remembered folder, which needs its permission again — so the next load asks
+			// for it on the splash rather than this click trying to.
+			void swapSource({
+				kind: "local",
+				describe: `“${rememberedFolder ?? "your folder"}”`,
+			});
+			return;
+		}
+
+		let next = manifest.templates.find((t) => `template:${t.id}` === value);
+		if (!next) {
+			el.presetSelect.value = activeValue();
+			return;
+		}
+		void swapSource({
+			kind: "template",
+			template: next.id,
+			describe: `the ${next.id} template`,
+		});
 	});
 
 	// Exposed for the devtools console, and for driving the workspace from a browser
@@ -469,6 +555,11 @@ async function boot(
 			// Reachable without an export, which needs a signed-in account and a popup: the
 			// dialog's own behaviour is worth exercising on its own.
 			exportDialog,
+			// Same reason, more so: `showDirectoryPicker` opens a dialog belonging to the
+			// operating system, which no automation harness can answer — so the only way to
+			// exercise what surrounds it is to reach these directly.
+			folderDialog,
+			project,
 			// Echoes by default, so a transcript read back from an automation harness shows which
 			// command produced which output.
 			submit: (line: string, echo = true) => submit(line, echo),
@@ -491,12 +582,21 @@ async function boot(
 		terminal.fit();
 		editor.layout();
 		terminal.writeLine(`worker: ready — node ${nodeVersion} on wasm`);
+		terminal.writeLine(project.summary);
+		// Said in the terminal as well as the startup log, because a source that quietly
+		// resolved to something other than what was asked for is exactly the thing someone
+		// would otherwise take for a bug.
+		if (project.notice) terminal.writeLine(`note: ${project.notice}`);
+		if (project.kind === "local") {
+			terminal.writeLine(
+				"writes here are writes to that folder — .git is mounted but kept out of the tree"
+			);
+		}
 		terminal.writeLine(
-			restored
-				? `${info.id} template restored from this device (${info.packages} packages)`
-				: `${info.id} template unpacked (${info.packages} packages)`
+			project.start
+				? `bash over ${PROJECT_ROOT} — type help, or hit ${idleLabel}`
+				: `bash over ${PROJECT_ROOT} — type help (no dev or start script to run)`
 		);
-		terminal.writeLine(`bash over ${PROJECT_ROOT} — type help, or hit Run dev server`);
 		if (shadowed.length > 0) {
 			// Said once, at boot, because it is a property of what is installed rather than of any
 			// command: the shell's own `sort` is not the package's, and `npm exec` is how to say so.
@@ -522,15 +622,11 @@ async function boot(
 				break;
 			}
 		}
-		el.runBtnLabel.textContent = runLabel(info);
+		el.runBtnLabel.textContent = idleLabel;
 	});
 }
 
 // ------------------------------------------------------------------ helpers
-
-function phaseVerb(phase: string): string {
-	return phase === "download" ? "Downloading" : "Unpacking";
-}
 
 /**
  * The prompt for a working directory.
@@ -621,21 +717,68 @@ async function probeRuntime(pool: WorkerPool, mirror: ProjectMirror): Promise<st
 	return probe.version;
 }
 
-function renderTemplates(el: ShellElements, templates: TemplateInfo[], active: TemplateInfo) {
-	el.presetSelect.replaceChildren(
-		...templates.map((t) => {
-			let option = document.createElement("option");
-			option.value = t.id;
-			option.textContent = t.label;
-			option.selected = t.id === active.id;
-			return option;
-		})
-	);
-	el.runBtnLabel.textContent = runLabel(active);
+/**
+ * The source select: every template, plus the folder this device remembers.
+ *
+ * Grouped rather than flat because the two are not alternatives of the same kind — a template is
+ * something this app unpacks into its own storage, and the folder is somewhere on the user's
+ * machine. The folder option only appears once there is one to offer, which is also why a fresh
+ * visit sees an unchanged template picker.
+ */
+function renderSources(
+	el: ShellElements,
+	templates: TemplateInfo[],
+	active: ResolvedProject,
+	folderName: string | undefined,
+	idleLabel: string
+) {
+	let group = (label: string, options: HTMLOptionElement[]) => {
+		let optgroup = document.createElement("optgroup");
+		optgroup.label = label;
+		optgroup.append(...options);
+		return optgroup;
+	};
+	let option = (value: string, text: string, selected: boolean) => {
+		let el = document.createElement("option");
+		el.value = value;
+		el.textContent = text;
+		el.selected = selected;
+		return el;
+	};
+
+	let children: HTMLElement[] = [
+		group(
+			"Templates",
+			templates.map((t) =>
+				option(
+					`template:${t.id}`,
+					t.label,
+					active.kind === "template" && t.id === active.template.id
+				)
+			)
+		),
+	];
+	if (folderName) {
+		children.push(
+			group("This device", [
+				option("local", `📁 ${folderName}`, active.kind === "local"),
+			])
+		);
+	}
+
+	el.presetSelect.replaceChildren(...children);
+	el.runBtnLabel.textContent = idleLabel;
 }
 
-function runLabel(info: TemplateInfo): string {
-	return info.start === "npm run dev" ? "Run dev server" : `Run ${info.start}`;
+/**
+ * What the Run button says.
+ *
+ * Undefined is a real answer, not a missing one: a folder whose `package.json` has no `dev` and no
+ * `start` has nothing for this button to do, and saying so beats a button that reliably fails.
+ */
+function runLabel(start: string | undefined): string {
+	if (!start) return "Nothing to run";
+	return start === "npm run dev" ? "Run dev server" : `Run ${start}`;
 }
 
 function setStatus(el: ShellElements, status: PoolStatus, detail?: string) {
@@ -663,13 +806,13 @@ function setBusy(el: ShellElements, busy: boolean, idleLabel: string) {
 }
 
 function showPreview(el: ShellElements, port: number, peerToken?: string) {
-	el.previewChip.hidden = false;
-	el.previewChip.href = previewUrlFor(port, "/", peerToken);
-	el.previewChipLabel.textContent = `Preview :${port}`;
+	el.previewBtn.hidden = false;
+	el.previewBtn.href = previewUrlFor(port, "/", peerToken);
+	el.previewBtnLabel.textContent = `Preview :${port}`;
 }
 
 function hidePreview(el: ShellElements) {
-	el.previewChip.hidden = true;
+	el.previewBtn.hidden = true;
 }
 
 function message(err: unknown): string {

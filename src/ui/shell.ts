@@ -14,6 +14,11 @@
 //     A native `<dialog>`, opened with `showModal` — the workspace's own shell would
 //     otherwise keep the keyboard, and xterm swallows Escape rather than letting an
 //     overlay see it.
+//   - `#openFolderBtn`, `#folderPanel` and `#folderDialog` exist because the mock's template
+//     select was the only way to choose a project. A folder from `showDirectoryPicker()` needs
+//     a click to open (the api requires a gesture), another click after every reload (the grant
+//     does not survive one), and something that says out loud what running code in a real
+//     directory means before the first one.
 
 import "./styles.css";
 // The favicon from nodejs.org, which the project only publishes as a bitmap.
@@ -98,6 +103,20 @@ const MARKUP = `
 				</p>
 				<button class="start-btn" id="tokenSubmit" type="submit">Start runtime</button>
 			</form>
+
+			<div class="token-form" id="folderPanel" hidden>
+				<span class="token-label">Reopen your folder</span>
+				<p class="token-hint">
+					The workspace has <strong id="folderPanelName"></strong> from a previous visit, but
+					a browser drops permission to a folder on every reload — so it needs one click to
+					read it again.
+				</p>
+				<button class="start-btn" id="folderOpenBtn" type="button">Reopen folder</button>
+				<button class="btn btn-ghost" id="folderTemplateBtn" type="button">
+					Use a template instead
+				</button>
+				<p class="token-hint" id="folderPanelError" hidden></p>
+			</div>
 		</div>
 
 		<section class="startup-console" aria-label="Startup log">
@@ -147,8 +166,18 @@ const MARKUP = `
 						<div class="pane-head">
 							<span class="kicker">Files</span>
 							<span class="spacer"></span>
+							<!-- Icon only: the pane it sits in is 195px wide and the source select has to
+							     fit beside it, which a labelled button does not leave room for. -->
+							<button class="btn btn-ghost btn-icon" id="openFolderBtn" type="button"
+								aria-label="Open a folder from this device"
+								title="Open a folder from this device">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+									<path d="M1.75 12.5v-9a.75.75 0 0 1 .75-.75h3l1.5 1.75h6.25a.75.75 0 0 1 .75.75v7.25a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75Z"
+										stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+								</svg>
+							</button>
 							<span class="select-pill">
-								<select id="presetSelect" aria-label="Project template"></select>
+								<select id="presetSelect" aria-label="Project source"></select>
 							</span>
 						</div>
 						<div class="tree" id="tree"></div>
@@ -171,9 +200,9 @@ const MARKUP = `
 				<div class="pane-head">
 					<span class="kicker">Shell</span>
 					<span class="spacer"></span>
-					<a class="preview-chip" id="previewChip" href="#" target="_blank" hidden>
+					<a class="btn btn-ghost btn-preview" id="previewBtn" href="#" target="_blank" hidden>
 						<span class="live"></span>
-						<span id="previewChipLabel">Preview</span>
+						<span id="previewBtnLabel">Preview</span>
 						<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
 							<path d="M2.5 7.5 7.5 2.5M7.5 2.5H3.8M7.5 2.5v3.7" stroke="currentColor"
 								stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
@@ -236,6 +265,20 @@ const MARKUP = `
 		</div>
 	</div>
 </dialog>
+
+<dialog class="dialog-host" id="folderDialog" aria-labelledby="folderDialogTitle">
+	<div class="dialog">
+		<button class="dialog-x" id="folderDialogClose" type="button" aria-label="Cancel">&times;</button>
+		<p class="kicker" id="folderDialogKicker">Open folder</p>
+		<h2 class="dialog-title" id="folderDialogTitle"></h2>
+		<p class="dialog-copy" id="folderDialogCopy"></p>
+		<ul class="dialog-steps" id="folderDialogPoints"></ul>
+		<div class="dialog-actions">
+			<button class="btn" id="folderDialogCancel" type="button">Cancel</button>
+			<button class="btn btn-primary" id="folderDialogConfirm" type="button" autofocus></button>
+		</div>
+	</div>
+</dialog>
 `;
 
 export interface ShellElements {
@@ -249,6 +292,11 @@ export interface ShellElements {
 	startupLog: HTMLElement;
 	tokenPanel: HTMLFormElement;
 	tokenInput: HTMLInputElement;
+	folderPanel: HTMLElement;
+	folderPanelName: HTMLElement;
+	folderPanelError: HTMLElement;
+	folderOpenBtn: HTMLButtonElement;
+	folderTemplateBtn: HTMLButtonElement;
 
 	app: HTMLElement;
 	statusPill: HTMLElement;
@@ -259,12 +307,13 @@ export interface ShellElements {
 	exportBtn: HTMLButtonElement;
 	restartBtn: HTMLButtonElement;
 	presetSelect: HTMLSelectElement;
+	openFolderBtn: HTMLButtonElement;
 	tree: HTMLElement;
 	tabs: HTMLElement;
 	runFileBtn: HTMLButtonElement;
 	code: HTMLElement;
-	previewChip: HTMLAnchorElement;
-	previewChipLabel: HTMLElement;
+	previewBtn: HTMLAnchorElement;
+	previewBtnLabel: HTMLElement;
 	clearBtn: HTMLButtonElement;
 	shell: HTMLElement;
 
@@ -275,6 +324,15 @@ export interface ShellElements {
 	exportDialogCopy: HTMLButtonElement;
 	exportDialogClose: HTMLButtonElement;
 	exportDialogDone: HTMLButtonElement;
+
+	folderDialog: HTMLDialogElement;
+	folderDialogKicker: HTMLElement;
+	folderDialogTitle: HTMLElement;
+	folderDialogCopy: HTMLElement;
+	folderDialogPoints: HTMLElement;
+	folderDialogCancel: HTMLButtonElement;
+	folderDialogConfirm: HTMLButtonElement;
+	folderDialogClose: HTMLButtonElement;
 }
 
 /** Replace `root`'s contents with the workspace and return its elements. */
@@ -298,6 +356,11 @@ export function buildShell(root: Element): ShellElements {
 		startupLog: pick("startupLog"),
 		tokenPanel: pick("tokenPanel"),
 		tokenInput: pick("tokenInput"),
+		folderPanel: pick("folderPanel"),
+		folderPanelName: pick("folderPanelName"),
+		folderPanelError: pick("folderPanelError"),
+		folderOpenBtn: pick("folderOpenBtn"),
+		folderTemplateBtn: pick("folderTemplateBtn"),
 
 		app: pick("app"),
 		statusPill: pick("statusPill"),
@@ -308,12 +371,13 @@ export function buildShell(root: Element): ShellElements {
 		exportBtn: pick("exportBtn"),
 		restartBtn: pick("restartBtn"),
 		presetSelect: pick("presetSelect"),
+		openFolderBtn: pick("openFolderBtn"),
 		tree: pick("tree"),
 		tabs: pick("tabs"),
 		runFileBtn: pick("runFileBtn"),
 		code: pick("code"),
-		previewChip: pick("previewChip"),
-		previewChipLabel: pick("previewChipLabel"),
+		previewBtn: pick("previewBtn"),
+		previewBtnLabel: pick("previewBtnLabel"),
 		clearBtn: pick("clearBtn"),
 		shell: pick("shell"),
 
@@ -324,5 +388,14 @@ export function buildShell(root: Element): ShellElements {
 		exportDialogCopy: pick("exportDialogCopy"),
 		exportDialogClose: pick("exportDialogClose"),
 		exportDialogDone: pick("exportDialogDone"),
+
+		folderDialog: pick("folderDialog"),
+		folderDialogKicker: pick("folderDialogKicker"),
+		folderDialogTitle: pick("folderDialogTitle"),
+		folderDialogCopy: pick("folderDialogCopy"),
+		folderDialogPoints: pick("folderDialogPoints"),
+		folderDialogCancel: pick("folderDialogCancel"),
+		folderDialogConfirm: pick("folderDialogConfirm"),
+		folderDialogClose: pick("folderDialogClose"),
 	};
 }

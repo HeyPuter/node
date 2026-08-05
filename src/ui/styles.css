@@ -371,6 +371,13 @@ select {
   flex: none;
 }
 
+/* Square, for a button whose whole label is its icon. */
+.btn-icon {
+  padding: 0;
+  width: 26px;
+  justify-content: center;
+}
+
 /* ------------------------------------------------------------- panes */
 
 .workspace {
@@ -787,31 +794,28 @@ select {
   color: var(--ink-soft);
 }
 
-/* ------------------------------------------------------ preview chip */
+/* ---------------------------------------------------- preview button */
 
-.preview-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 24px;
+/* A `.btn` sitting among the other head buttons, accented because it is the one
+   that only exists while a server is up. It stays an anchor so it keeps the
+   open-in-new-tab affordances a link has. */
+.btn-preview {
   padding: 0 10px;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
+  border-color: var(--accent);
   background: var(--accent-wash);
   color: var(--accent);
   font-family: var(--font);
-  font-size: 11.5px;
   font-weight: 600;
   text-decoration: none;
-  white-space: nowrap;
-  transition: background-color 0.15s ease;
 }
 
-.preview-chip:hover {
+.btn-preview:hover {
+  border-color: var(--accent);
   background: var(--accent-tint);
+  color: var(--accent);
 }
 
-.preview-chip .live {
+.btn-preview .live {
   width: 6px;
   height: 6px;
   border-radius: 999px;
@@ -819,7 +823,8 @@ select {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
-.preview-chip[hidden] {
+/* `.btn` sets a display, which would otherwise beat the `hidden` attribute. */
+.btn-preview[hidden] {
   display: none;
 }
 
@@ -1160,6 +1165,13 @@ select {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--ink-strong);
+}
+
+/* The folder panel's way out, under its `.start-btn`. A `.btn` is `inline-flex` with no
+   `justify-content`, so as a stretched flex item it would sit its label on the left. */
+.token-form .btn-ghost {
+  height: 34px;
+  justify-content: center;
 }
 
 .launch-progress {

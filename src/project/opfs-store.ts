@@ -1,4 +1,4 @@
-// The project's files, in the origin private filesystem.
+// A project in the origin private filesystem, which is where an unpacked template lives.
 //
 // This replaces "extract the template into memory on every load". The tarball is unpacked once,
 // into OPFS, and every load after that finds it already there — so a reload costs a directory
@@ -19,26 +19,18 @@
 // The `ProjectMirror` stays, but its job narrows to what the UI actually needs: a synchronous
 // read model for the tree and the editor, kept current from here and from the runtime's own watch
 // events.
+//
+// Everything about *reading and writing* a directory handle is in `./handle-store`, because a
+// picked directory (`./local-dir`) is the same object and wants the same code. What is left here
+// is only what is true of OPFS in particular: it needs no permission, it can be asked to persist,
+// and the workspace is free to delete the parts of it that it created.
 
-import type { MountEntry } from "./mirror";
+import { createHandleStore, hasContents, type HandleStore } from "./handle-store";
 
 /** Everything lives under one directory, so several projects can coexist later. */
 const PROJECTS_DIR = "projects";
 
-export interface OpfsStore {
-	/** Mounted into the runtime at `PROJECT_ROOT`. */
-	readonly handle: FileSystemDirectoryHandle;
-	/** Whether this directory already had contents when it was opened. */
-	readonly existing: boolean;
-	/** Every file and directory, for hydrating the mirror. */
-	hydrate(onProgress?: (count: number) => void): Promise<MountEntry[]>;
-	writeMany(entries: Iterable<MountEntry>): Promise<void>;
-	remove(paths: Iterable<string>): Promise<void>;
-	/** Read one file back, for reflecting a runtime write into the mirror. */
-	read(path: string): Promise<Uint8Array | undefined>;
-	/** Throw away everything — switching template, or recovering from a bad extract. */
-	clear(): Promise<void>;
-}
+export type { HandleStore };
 
 /**
  * Delete every project directory but `keep`, and report which ids went.
@@ -52,6 +44,10 @@ export interface OpfsStore {
  * directory, so on the outgoing page its files can still be held open by a worker, and
  * OPFS refuses to remove a file with a live access handle. After the reload there is no
  * worker yet and nothing is held, so the removal either works or genuinely failed.
+ *
+ * Only called when a template is the active source. With a picked folder open there is no
+ * `keep` to name, and pruning on its behalf would delete the template the user is one click
+ * away from switching back to.
  */
 export async function pruneProjectStores(keep: string): Promise<string[]> {
 	if (!navigator.storage?.getDirectory) return [];
@@ -85,27 +81,7 @@ export async function pruneProjectStores(keep: string): Promise<string[]> {
 	return removed;
 }
 
-function segments(path: string): string[] {
-	return path.split("/").filter((s) => s.length > 0 && s !== ".");
-}
-
-async function dirFor(
-	root: FileSystemDirectoryHandle,
-	parts: string[],
-	create: boolean
-): Promise<FileSystemDirectoryHandle | undefined> {
-	let dir = root;
-	for (const part of parts) {
-		try {
-			dir = await dir.getDirectoryHandle(part, { create });
-		} catch {
-			return undefined;
-		}
-	}
-	return dir;
-}
-
-export async function openProjectStore(id: string): Promise<OpfsStore> {
+export async function openProjectStore(id: string): Promise<HandleStore> {
 	if (!navigator.storage?.getDirectory) {
 		throw new Error(
 			"this browser has no origin private filesystem, which the workspace needs to hold your project"
@@ -119,107 +95,8 @@ export async function openProjectStore(id: string): Promise<OpfsStore> {
 	const projects = await opfsRoot.getDirectoryHandle(PROJECTS_DIR, { create: true });
 	const handle = await projects.getDirectoryHandle(id, { create: true });
 
-	let existing = false;
-	for await (const _ of (
-		handle as unknown as { keys(): AsyncIterableIterator<string> }
-	).keys()) {
-		existing = true;
-		break;
-	}
-
-	const store: OpfsStore = {
-		handle,
-		existing,
-
-		async hydrate(onProgress) {
-			const out: MountEntry[] = [];
-			const walk = async (dir: FileSystemDirectoryHandle, base: string) => {
-				for await (const [name, child] of (
-					dir as unknown as {
-						entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
-					}
-				).entries()) {
-					const path = base ? `${base}/${name}` : name;
-					if (child.kind === "directory") {
-						out.push({ path });
-						await walk(child as FileSystemDirectoryHandle, path);
-					} else {
-						const file = await (child as FileSystemFileHandle).getFile();
-						out.push({
-							path,
-							data: new Uint8Array(await file.arrayBuffer()),
-							mtimeMs: file.lastModified,
-						});
-					}
-					if (out.length % 50 === 0) onProgress?.(out.length);
-				}
-			};
-			await walk(handle, "");
-			onProgress?.(out.length);
-			return out;
-		},
-
-		async writeMany(entries) {
-			for (const entry of entries) {
-				const parts = segments(entry.path);
-				if (parts.length === 0) continue;
-				if (entry.data === undefined) {
-					await dirFor(handle, parts, true);
-					continue;
-				}
-				const dir = await dirFor(handle, parts.slice(0, -1), true);
-				if (!dir) continue;
-				const file = await dir.getFileHandle(parts[parts.length - 1], {
-					create: true,
-				});
-				const writable = await file.createWritable({ keepExistingData: false });
-				try {
-					await writable.write(entry.data as unknown as ArrayBufferView<ArrayBuffer>);
-					await writable.close();
-				} catch (err) {
-					await writable.abort().catch(() => undefined);
-					throw err;
-				}
-			}
-		},
-
-		async remove(paths) {
-			for (const path of paths) {
-				const parts = segments(path);
-				if (parts.length === 0) continue;
-				const dir = await dirFor(handle, parts.slice(0, -1), false);
-				if (!dir) continue;
-				await dir
-					.removeEntry(parts[parts.length - 1], { recursive: true })
-					.catch(() => undefined);
-			}
-		},
-
-		async read(path) {
-			const parts = segments(path);
-			if (parts.length === 0) return undefined;
-			const dir = await dirFor(handle, parts.slice(0, -1), false);
-			if (!dir) return undefined;
-			try {
-				const file = await dir.getFileHandle(parts[parts.length - 1]);
-				return new Uint8Array(await (await file.getFile()).arrayBuffer());
-			} catch {
-				return undefined;
-			}
-		},
-
-		async clear() {
-			const names: string[] = [];
-			for await (const name of (
-				handle as unknown as { keys(): AsyncIterableIterator<string> }
-			).keys()) {
-				names.push(name);
-			}
-			for (const name of names) {
-				await handle.removeEntry(name, { recursive: true }).catch(() => undefined);
-			}
-		},
-	};
-
-	return store;
+	// No limits and no skips: this directory holds exactly what the workspace put in it, so
+	// there is nothing here it would rather not read — and `clear()` stays available, since
+	// recovering from a bad extract means emptying it.
+	return createHandleStore(handle, await hasContents(handle));
 }
