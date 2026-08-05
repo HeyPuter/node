@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "template": "node ./scripts/build-template.ts",
     "prebuild": "node ./scripts/build-template.ts",
-    "deploy:webdav": "./scripts/deploy-webdav.sh"
+    "deploy:webdav": "./scripts/deploy-webdav.sh",
+    "link:node-worker": "./scripts/link-node-worker.sh"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

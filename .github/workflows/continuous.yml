@@ -1,0 +1,117 @@
+name: Continuous build
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# The `continuous` tag is recreated on every run, so two runs must not overlap: the loser of the
+# race would leave its assets attached to the other one's commit. Newer wins — a build of an older
+# commit has nothing left to say once a newer one is underway.
+concurrency:
+  group: continuous
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Dominated by the node-worker build below, which is long enough that the default limit is not
+    # obviously sufficient.
+    timeout-minutes: 180
+
+    steps:
+      # Into a subdirectory rather than the workspace root: `node-worker` is a `link:../node-worker`
+      # dependency, so it has to end up *beside* this checkout, and actions/checkout cannot write
+      # outside the workspace.
+      - name: Check out the app
+        uses: actions/checkout@v5
+        with:
+          path: app
+
+      - name: Check out node-worker
+        uses: actions/checkout@v5
+        with:
+          repository: heyputer/node-worker
+          path: node-worker
+          # GITHUB_TOKEN can read a public repository, which is all this needs. The secret is the
+          # fallback for as long as node-worker is still private: GITHUB_TOKEN is scoped to this
+          # repository alone and cannot read another private one.
+          token: ${{ secrets.NODE_WORKER_TOKEN || github.token }}
+
+      # An Emscripten toolchain, a full Node checkout and the object files from a wasm link of Node
+      # do not comfortably fit alongside everything the runner image ships with. These two are the
+      # largest trees this build will never touch.
+      - name: Reclaim runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+
+      # Pinned rather than read from a `packageManager` field, which this repo does not set. Both
+      # lockfiles are lockfileVersion 9, so one pnpm serves both checkouts.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      # The long pole by a wide margin: clones emsdk and the Node v25.9.0 source, builds OpenSSL's
+      # libcrypto with emcc, then compiles and links Node itself to wasm. Deliberately uncached —
+      # see the note at the end of this file.
+      - name: Build node-worker
+        working-directory: node-worker
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Install
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      # `prebuild` bakes the project templates first, fetching create-vite and its dependency tree
+      # from the npm registry, so this needs network as well as CPU.
+      - name: Build
+        working-directory: app
+        run: pnpm build
+
+      # `-C app dist` rather than `-C app/dist .`, so every entry in the archive is prefixed
+      # `dist/`. Asserted rather than assumed: getting this wrong produces an archive that looks
+      # fine until it is unpacked over somebody's web root.
+      - name: Package dist
+        run: |
+          tar -czf dist.tar.gz -C app dist
+          tar -tzf dist.tar.gz | grep -qx 'dist/index.html'
+
+      # Deleted and recreated rather than edited, because the tag has to move to this commit and
+      # `gh release edit --target` will not move a tag that already exists. `--repo` throughout
+      # because the workspace root is not itself a git checkout.
+      - name: Publish the continuous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Read from the checkout rather than from `github.event`, which has no commit message on
+          # a workflow_dispatch run, and passed to printf as an argument so nothing in it is
+          # interpreted as shell.
+          subject="$(git -C app log -1 --pretty=%s)"
+          {
+            printf 'Built from `%s` — %s\n\n' "$GITHUB_SHA" "$subject"
+            printf '`dist.tar.gz` unpacks to `dist/`.\n\n'
+            printf 'The build uses a relative base, so it can be served from any path — `/`,\n'
+            printf '`/labs/node/`, anywhere — provided the URL it is served at ends in a slash.\n'
+          } > notes.md
+
+          gh release delete continuous --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create continuous dist.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Continuous build" \
+            --notes-file notes.md
+
+# On caching: nothing here is cached, so every run pays for the full node-worker build. The
+# alternative is caching `node-worker/{dist,emsdk,node_core}` keyed on that repo's commit SHA,
+# which would turn most runs into a cache restore. Worth revisiting if the wait starts to hurt.
