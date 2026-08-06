@@ -37,7 +37,7 @@ const ANSI = /\x1b(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\
  * between the two cases, and it is what lets it find a peer server that no user owns.
  */
 export function previewUrlFor(port: number, path = "/", peerToken?: string): string {
-	let target = `http://localhost:${port}${path}`;
+	let target = encodeURIComponent(`http://localhost:${port}${path}`);
 	let anon = peerToken ? `&peerToken=${encodeURIComponent(peerToken)}` : "";
 	return `${PUTER_BROWSER}?openUrl=${target}${anon}`;
 }
