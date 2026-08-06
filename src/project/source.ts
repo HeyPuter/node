@@ -179,8 +179,7 @@ async function resolveLocal(
 		entries = await loadTemplate(info, (p) => {
 			report.phase(p.phase, p.fraction ?? 0, `${phaseVerb(p.phase)} ${p.detail}`);
 		});
-		report.phase("extract", 0.9, "Saving the project…");
-		await store.writeMany(entries);
+		await saveProject(store, entries, report);
 		summary = `${info.id} template unpacked into “${handle.name}” (${info.packages} packages)`;
 	} else {
 		entries = [];
@@ -222,7 +221,15 @@ async function resolveTemplate(
 	if (store.existing) {
 		report.phase("extract", 0, "Opening your project…");
 		entries = await store.hydrate((count) => {
-			report.phase("extract", 0, `Reading ${count} files…`);
+			// Against the manifest's count, because it is this template that was written here —
+			// a moving fraction rather than the flat 0 a reload used to sit on for the whole
+			// read. An estimate, not a total: `hydrate` counts directories as well as files, so
+			// it runs out of bar slightly early and waits there. Clamped for that reason.
+			report.phase(
+				"extract",
+				info.files > 0 ? Math.min(1, count / info.files) : 0,
+				`Reading ${count} files…`
+			);
 		});
 		report.log(`project: ${entries.length} entries already on disk`);
 	} else {
@@ -230,8 +237,7 @@ async function resolveTemplate(
 			report.phase(p.phase, p.fraction ?? 0, `${phaseVerb(p.phase)} ${p.detail}`);
 		});
 		report.log(`template: ${entries.length} entries, ${info.packages} packages`);
-		report.phase("extract", 0.9, "Saving the project…");
-		await store.writeMany(entries);
+		await saveProject(store, entries, report);
 	}
 
 	return {
@@ -248,6 +254,31 @@ async function resolveTemplate(
 }
 
 // ------------------------------------------------------------------ helpers
+
+/**
+ * Write a freshly unpacked template out to the store, reporting as it goes.
+ *
+ * Its own splash phase rather than the tail end of "extract". This is the slowest thing a first
+ * visit does — thousands of individual file creates, which no amount of batching turns into one
+ * operation — and it used to be a single "Saving the project…" in front of a bar parked on one
+ * number for the duration, which is indistinguishable from a hang.
+ */
+async function saveProject(
+	store: HandleStore,
+	entries: MountEntry[],
+	report: SourceReporter
+): Promise<void> {
+	const count = entries.length.toLocaleString();
+	report.phase("save", 0, `Saving ${count} files…`);
+	await store.writeMany(entries, (done, total) => {
+		report.phase(
+			"save",
+			total > 0 ? done / total : 1,
+			`Saved ${done.toLocaleString()} of ${total.toLocaleString()} files…`
+		);
+	});
+	report.log(`project: ${count} entries written`);
+}
 
 function phaseVerb(phase: string): string {
 	return phase === "download" ? "Downloading" : "Unpacking";

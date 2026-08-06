@@ -57,6 +57,25 @@ export interface HandleStoreOptions {
 /** How many of the biggest directories an over-limit folder names. */
 const BLAME_COUNT = 3;
 
+/**
+ * How many files `writeMany` has in flight at once.
+ *
+ * Writing one is four round-trips to the browser's filesystem thread — resolve its directory, open
+ * the file, open a writable, close it — and the react-ts template is 4,927 files, most of them
+ * small and several directories deep inside `node_modules`. Done strictly one at a time that is
+ * some twenty thousand sequential round-trips: it measured 10s on a fast desktop, and it is the
+ * kind of cost that scales with somebody else's disk.
+ *
+ * Almost all of it is latency rather than disk or CPU, so overlapping is nearly pure win: the same
+ * template writes in 2.6-3.0s this way. 16 rather than more because a sweep over a tree this shape
+ * stopped improving there and was slower by 32 — the filesystem backend is saturated by then, and
+ * the only thing further concurrency buys is more buffers held in flight.
+ */
+const WRITE_CONCURRENCY = 16;
+
+/** How often a bulk write reports, in entries. Matches `hydrate`, for the same reason. */
+const PROGRESS_EVERY = 50;
+
 function segments(path: string): string[] {
 	return path.split("/").filter((s) => s.length > 0 && s !== ".");
 }
@@ -101,6 +120,33 @@ async function dirFor(
 		}
 	}
 	return dir;
+}
+
+/**
+ * Run `each` over every item, at most `limit` at a time.
+ *
+ * Stops at the first failure and rethrows it once the runners already in flight have finished,
+ * which is what the serial loop this replaced did — and the reason not to lean on `Promise.all`
+ * alone, whose rejection would surface with a dozen writes still running behind it.
+ */
+async function inParallel<T>(
+	items: readonly T[],
+	limit: number,
+	each: (item: T) => Promise<void>
+): Promise<void> {
+	let next = 0;
+	let failure: unknown;
+	let runner = async () => {
+		while (next < items.length && failure === undefined) {
+			try {
+				await each(items[next++]);
+			} catch (err) {
+				failure = err;
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runner));
+	if (failure !== undefined) throw failure;
 }
 
 export function createHandleStore(
@@ -197,19 +243,54 @@ export function createHandleStore(
 			return out;
 		},
 
-		async writeMany(entries) {
-			for (const entry of entries) {
-				const parts = segments(entry.path);
-				if (parts.length === 0) continue;
-				if (entry.data === undefined) {
-					await dirFor(handle, parts, true);
-					continue;
+		async writeMany(entries, onProgress) {
+			const all = [...entries];
+
+			/**
+			 * Directory handles by path, so a directory is opened once however many files go
+			 * into it.
+			 *
+			 * The win is twofold. Resolving `node_modules/@babel/parser/lib` used to cost four
+			 * round-trips *per file written into it* — a template's 5,000 files sit in a few
+			 * hundred directories, so nearly all of that was re-answering the same question.
+			 * And the entries are cached as **promises**: the sixteen writes that arrive at a
+			 * brand-new directory together then share one `create: true` rather than racing to
+			 * make it.
+			 *
+			 * Per call, not for the store's lifetime. A directory can go away underneath us —
+			 * `remove`, a program the runtime is running, or the user in their own file manager
+			 * — and a handle cached across calls would keep failing every write into it.
+			 */
+			const dirs = new Map<string, Promise<FileSystemDirectoryHandle | undefined>>();
+
+			const dirOnce = (parts: string[]): Promise<FileSystemDirectoryHandle | undefined> => {
+				if (parts.length === 0) return Promise.resolve(handle);
+				const path = parts.join("/");
+				let found = dirs.get(path);
+				if (!found) {
+					// Resolved from its own parent rather than walked from the root, so a new
+					// directory costs one round-trip instead of one per segment above it.
+					const name = parts[parts.length - 1];
+					found = dirOnce(parts.slice(0, -1)).then((parent) =>
+						parent
+							?.getDirectoryHandle(name, { create: true })
+							.catch(() => undefined)
+					);
+					dirs.set(path, found);
 				}
-				const dir = await dirFor(handle, parts.slice(0, -1), true);
-				if (!dir) continue;
-				const file = await dir.getFileHandle(parts[parts.length - 1], {
-					create: true,
-				});
+				return found;
+			};
+
+			const writeOne = async (entry: MountEntry) => {
+				const parts = segments(entry.path);
+				if (parts.length === 0) return;
+				if (entry.data === undefined) {
+					await dirOnce(parts);
+					return;
+				}
+				const dir = await dirOnce(parts.slice(0, -1));
+				if (!dir) return;
+				const file = await dir.getFileHandle(parts[parts.length - 1], { create: true });
 				const writable = await file.createWritable({ keepExistingData: false });
 				try {
 					await writable.write(entry.data as unknown as ArrayBufferView<ArrayBuffer>);
@@ -218,7 +299,18 @@ export function createHandleStore(
 					await writable.abort().catch(() => undefined);
 					throw err;
 				}
-			}
+			};
+
+			let done = 0;
+			await inParallel(all, WRITE_CONCURRENCY, async (entry) => {
+				await writeOne(entry);
+				// Counted even when the entry was skipped, so the total the caller is shown
+				// against is the one it handed over.
+				done += 1;
+				if (done % PROGRESS_EVERY === 0 || done === all.length) {
+					onProgress?.(done, all.length);
+				}
+			});
 		},
 
 		async remove(paths) {

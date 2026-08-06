@@ -146,9 +146,22 @@ async function boot(
 	// of it back would double the boot cost for no effect — and against a folder somebody picked,
 	// it would rewrite every file in their project on open. The target is set once the pool
 	// exists, because that is what an edit has to travel through — see `pool.projectTarget`.
+	splash.phase(
+		"save",
+		1,
+		`Building the file tree from ${project.entries.length.toLocaleString()} entries…`
+	);
 	mirror.seed(project.entries);
 
 	// --- token ------------------------------------------------------------
+	//
+	// Reported, because it is not free and it used to run under whatever the project step had
+	// last said: an anonymous run mints a peer token, waits for that write to land, then fetches
+	// a relay URL. Measured at 360 ms through the dev proxy and worse as a Puter app, where the
+	// write is a real round trip and `waitForPuterKV` will sit for up to five seconds waiting for
+	// the SDK to show up. However long it takes, the splash used to spend it insisting it was
+	// still saving files — which is how a slow connection came to look like a slow save.
+	splash.phase("auth", 0, "Connecting…");
 	let auth = await opts.resolveAuth(() => splash.requestToken());
 	let anonymous = !auth.token;
 	if (anonymous) {
@@ -180,6 +193,7 @@ async function boot(
 		else void pool.stop();
 	}
 
+	splash.phase("auth", 1, "Preparing the terminal…");
 	let terminal = mountTerminal(el.shell, {
 		onCommand: (line) => void submit(line),
 		onInterrupt: interrupt,

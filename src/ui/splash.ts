@@ -2,8 +2,14 @@
 //
 // Its percentages are real, unlike the mock's timed script: the download reports bytes
 // against the archive's known size, the extract reports entries against the manifest's
-// file count, and the populate reports batches. Weighted so the bar advances at a
+// file count, and the save reports files written. Weighted so the bar advances at a
 // roughly even rate rather than sitting at 90% through the slowest phase.
+//
+// A phase nothing reports is worse than no phase at all — it is a slice of bar the run
+// silently skips, which is exactly what "Populating filesystem" became once the worker
+// started mounting the project instead of being filled with it. So the list below is kept
+// to phases that something actually calls; see the `.phase(` callers in `src/workspace.ts`
+// and `src/project/source.ts`.
 
 import type { ShellElements } from "./shell";
 
@@ -18,8 +24,11 @@ export interface SplashPhase {
 const PHASES: SplashPhase[] = [
 	{ key: "download", label: "Downloading project image", weight: 3 },
 	{ key: "extract", label: "Unpacking project", weight: 2 },
+	// Weighted like the download because it costs like the download: a first visit writes
+	// every one of the template's ~5,000 files out to disk here.
+	{ key: "save", label: "Saving project", weight: 3 },
+	{ key: "auth", label: "Connecting", weight: 1 },
 	{ key: "worker", label: "Starting worker", weight: 1 },
-	{ key: "populate", label: "Populating filesystem", weight: 3 },
 	{ key: "probe", label: "Checking the runtime", weight: 1 },
 ];
 

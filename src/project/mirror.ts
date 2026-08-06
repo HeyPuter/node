@@ -77,9 +77,16 @@ interface FileNode {
  * absent from the next run.
  */
 export interface MirrorTarget {
-	writeMany(entries: Iterable<MountEntry>): Promise<void>;
+	writeMany(entries: Iterable<MountEntry>, onProgress?: WriteProgress): Promise<void>;
 	remove(paths: Iterable<string>): Promise<void>;
 }
+
+/**
+ * How far a bulk write has got. Only the one caller that writes thousands of entries at once —
+ * unpacking a template, in `./source` — passes this; an edit from the editor is one file and has
+ * nothing to report.
+ */
+export type WriteProgress = (done: number, total: number) => void;
 
 /** The store the project lives in: a mirror target that can also be read back. */
 export interface ProjectStore extends MirrorTarget {
