@@ -8,6 +8,7 @@
 
 import { NodeWorker, WorkerExitError, type Console as NodeWorkerConsole } from "node-worker";
 import workerURL from "node-worker/worker?url";
+import swURL from "node-worker/sw?url";
 
 import { createDriveTarget } from "../install/drive-target";
 import type { CommandTarget } from "./programs";
@@ -35,7 +36,10 @@ export function createDriveCommandTarget(opts: DriveCommandOptions): DriveComman
 
 	let acquire = async (): Promise<NodeWorker> => {
 		if (worker) return worker;
-		let next = new NodeWorker(workerURL, opts.token, opts.cwd, { keepalive: true });
+		// `swURL` for the same reason the workspace passes it: without the service worker there
+		// is no synchronous filesystem, and the runtime refuses to start rather than failing
+		// later inside whatever needed a sync read.
+		let next = new NodeWorker(workerURL, opts.token, opts.cwd, { keepalive: true, swURL });
 		worker = next;
 		opts.attach(next.console as NodeWorkerConsole);
 		await next.ready;

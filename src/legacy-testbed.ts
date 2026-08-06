@@ -8,6 +8,7 @@
 
 import { NodeWorker } from "node-worker";
 import workerURL from "node-worker/worker?url";
+import swURL from "node-worker/sw?url";
 
 import { mountEditor } from "./monaco";
 import { mountTerminal, type TerminalController } from "./terminal";
@@ -384,7 +385,7 @@ export async function mountApp(root: Element, runtimeStore: RuntimeStore) {
 
 		try {
 			worker?.terminate();
-			worker = new NodeWorker(workerURL, token, cwd);
+			worker = new NodeWorker(workerURL, token, cwd, { swURL });
 			terminal?.attachConsole(worker.console);
 			await worker.ready;
 			workerReady = true;
