@@ -25,6 +25,24 @@ export default defineConfig({
 	// `/labs/node`) — relative URLs resolve against the *document*, so a missing slash drops a
 	// segment. Dev is unaffected: Vite forces base to `/` when serving.
 	base: "./",
+	server: {
+		proxy: {
+			// The relay endpoint is origin-gated and does not know `localhost`, so anonymous mode
+			// cannot be exercised under `pnpm dev` at all — it fails before the workspace boots.
+			// This forwards it under an origin the endpoint does recognize, which is the only thing
+			// it checks. Dev-only (Vite ignores `server` in a build), and reached by pointing
+			// `VITE_WISP_URL_ENDPOINT` at `/__wisp/`.
+			"/__wisp": {
+				target: "https://sensible-ship-8305.puter.work",
+				changeOrigin: true,
+				rewrite: (path: string) => path.replace(/^\/__wisp\/?/, "/"),
+				headers: {
+					Origin: "https://developer.puter.com",
+					Referer: "https://developer.puter.com/labs/node/",
+				},
+			},
+		},
+	},
 	build: {
 		chunkSizeWarningLimit: Infinity,
 		rolldownOptions: {
