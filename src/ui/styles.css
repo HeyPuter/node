@@ -490,6 +490,59 @@ select {
   pointer-events: none;
 }
 
+/* Locked while a program holds the worker, because switching source reloads the page.
+   The native disabled `<select>` is a text shade nobody notices, so the pill goes flat
+   and grey with a padlock where the chevron was — and the pill takes the cursor and the
+   `title`, since the disabled control inside it gets no pointer events. */
+.select-pill[data-locked="true"] {
+  cursor: not-allowed;
+}
+
+/* `--ink-mid` rather than the fainter `--ink-soft`, because which project is loaded stays
+   worth reading while it runs — the flat fill and the padlock carry the unavailability. */
+.select-pill select:disabled {
+  border-color: var(--line-soft);
+  background: var(--track);
+  color: var(--ink-mid);
+  cursor: not-allowed;
+}
+
+.select-pill select:disabled:hover {
+  border-color: var(--line-soft);
+}
+
+/* The padlock, drawn from the pill's two pseudo-elements — `::after` is the body (the
+   chevron's borders traded for a fill), `::before` the shackle sitting on top of it.
+   Both keep the chevron's footprint, so locking does not resize the pill.
+
+   `box-sizing` is set here because the `*` reset does not reach pseudo-elements: on
+   content-box the shackle's borders would sit outside its width and shift it off the
+   body's centre. With both boxes measured the same way, the two `right` offsets put
+   their centres on the same 12.5px. */
+.select-pill[data-locked="true"]::after {
+  box-sizing: border-box;
+  width: 9px;
+  height: 7px;
+  border: none;
+  border-radius: 1.5px;
+  background: var(--ink-mid);
+  transform: translateY(1.5px);
+}
+
+.select-pill[data-locked="true"]::before {
+  content: "";
+  box-sizing: border-box;
+  position: absolute;
+  right: 10px;
+  width: 5px;
+  height: 5px;
+  border: 1.4px solid var(--ink-mid);
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
 /* --------------------------------------------------------- file tree */
 
 .tree {

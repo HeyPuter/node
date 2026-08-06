@@ -175,7 +175,10 @@ const MARKUP = `
 										stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
 								</svg>
 							</button>
-							<span class="select-pill">
+							<!-- The pill, not the select, carries the locked look and its tooltip: a
+							     disabled select takes no pointer events, so a title on it would never
+							     show. -->
+							<span class="select-pill" id="presetPill">
 								<select id="presetSelect" aria-label="Project source"></select>
 							</span>
 						</div>
@@ -306,6 +309,7 @@ export interface ShellElements {
 	exportBtn: HTMLButtonElement;
 	restartBtn: HTMLButtonElement;
 	presetSelect: HTMLSelectElement;
+	presetPill: HTMLElement;
 	openFolderBtn: HTMLButtonElement;
 	tree: HTMLElement;
 	tabs: HTMLElement;
@@ -370,6 +374,7 @@ export function buildShell(root: Element): ShellElements {
 		exportBtn: pick("exportBtn"),
 		restartBtn: pick("restartBtn"),
 		presetSelect: pick("presetSelect"),
+		presetPill: pick("presetPill"),
 		openFolderBtn: pick("openFolderBtn"),
 		tree: pick("tree"),
 		tabs: pick("tabs"),

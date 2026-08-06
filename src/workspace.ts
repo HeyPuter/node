@@ -264,6 +264,9 @@ async function boot(
 
 	renderSources(el, manifest.templates, project, rememberedFolder, idleLabel);
 	if (!localDirSupported()) {
+		// Marked as well as disabled so `setBusy` can tell a browser that will never do this
+		// from a run that is only holding it for now, and leave the former alone.
+		el.openFolderBtn.dataset.unsupported = "true";
 		el.openFolderBtn.disabled = true;
 		el.openFolderBtn.title =
 			"this browser cannot open a folder from your device — Chrome, Edge and other Chromium browsers can";
@@ -803,6 +806,19 @@ function setBusy(el: ShellElements, busy: boolean, idleLabel: string) {
 	el.exportBtn.disabled = busy;
 	el.restartBtn.disabled = busy;
 	el.presetSelect.disabled = busy;
+	// Says *why* it is unavailable, which the greying alone cannot: a switch reloads the page,
+	// so it has to wait for whatever holds the worker. See `.select-pill[data-locked]`.
+	el.presetPill.dataset.locked = busy ? "true" : "false";
+	if (busy) {
+		el.presetPill.title = "Stop what is running first — switching project reloads the page";
+	} else {
+		el.presetPill.removeAttribute("title");
+	}
+	// Opening a folder swaps the project the same way the select does, so it waits for the same
+	// reason — `swapSource` already declines while busy, and this stops the click that goes
+	// nowhere. The button keeps its own title: a disabled one shows no tooltip in every browser,
+	// which is why the reason sits on the pill beside it.
+	el.openFolderBtn.disabled = busy || el.openFolderBtn.dataset.unsupported === "true";
 }
 
 function showPreview(el: ShellElements, port: number, peerToken?: string) {
